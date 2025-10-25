@@ -8,6 +8,7 @@ CollabBoard is a professional board meeting platform designed to streamline boar
 - Advanced Voting Tools: Includes a range of voting mechanisms for secure and transparent decision-making.
 - Auto-Generated Presentations: Built-in presentation creator that generates business-ready decks from meeting agendas and votes.
 - User-Friendly Interface: Simple form-based setup to quickly launch and manage board activities.
+- Local-storage: This does not require a database. Send the meeting link to your attendees so they can participate on their devices. Relies on localhost. 
 
 
 ## Usage
