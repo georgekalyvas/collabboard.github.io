@@ -185,6 +185,7 @@ class CollabBoard {
         try {
             this.setupEventListeners();
             this.setupItemTypeSelection();
+            this.setupColorVisionToggle();
             this.checkUrlForBoard();
             this.initAnalytics();
             
@@ -318,6 +319,49 @@ class CollabBoard {
                 document.getElementById('success-message').classList.add('hidden');
             });
         }
+        
+        // Color-blind toggle button (if present)
+        const cbToggle = document.getElementById('toggle-cb-btn');
+        if (cbToggle) {
+            cbToggle.addEventListener('click', (e) => {
+                const pressed = cbToggle.getAttribute('aria-pressed') === 'true';
+                this.toggleColorBlindMode(!pressed);
+            });
+        }
+    }
+
+    /* Color-vision / color-blind mode helpers */
+    setupColorVisionToggle() {
+        // Apply stored preference (if any)
+        const pref = localStorage.getItem('collab_color_vision');
+        const enabled = pref === 'color-blind';
+        this.applyColorVisionPreference(enabled);
+    }
+
+    applyColorVisionPreference(enabled) {
+        const root = document.documentElement;
+        const cbToggle = document.getElementById('toggle-cb-btn');
+        if (enabled) {
+            root.classList.add('cb-mode');
+            root.setAttribute('data-color-vision', 'color-blind');
+            localStorage.setItem('collab_color_vision', 'color-blind');
+            if (cbToggle) {
+                cbToggle.setAttribute('aria-pressed', 'true');
+                cbToggle.textContent = 'CB: On';
+            }
+        } else {
+            root.classList.remove('cb-mode');
+            root.removeAttribute('data-color-vision');
+            localStorage.removeItem('collab_color_vision');
+            if (cbToggle) {
+                cbToggle.setAttribute('aria-pressed', 'false');
+                cbToggle.textContent = 'CB Mode';
+            }
+        }
+    }
+
+    toggleColorBlindMode(enable) {
+        this.applyColorVisionPreference(!!enable);
     }
     
     setupItemTypeSelection() {
