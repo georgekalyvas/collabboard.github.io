@@ -1440,20 +1440,21 @@ class CollabBoard {
     generateQRCode(url) {
         const qrContainer = document.getElementById('qr-code');
         if (qrContainer) {
-            qrContainer.innerHTML = `
-                <div style="font-family: monospace; line-height: 1; font-size: 8px;">
-                    ████████████████████████████████<br>
-                    █▀▀▀▀▀▀▀▀██▀▀▀██▀▀▀▀▀▀▀▀██▀▀▀█<br>
-                    █ █████ █ ██▀▀███ █████ ██▀▀██<br>
-                    █ █▀▀▀█ █ ████▀██ █▀▀▀█ ████▀█<br>
-                    █ █▄▄▄█ █ ██▀████ █▄▄▄█ ██▄▄██<br>
-                    █▄▄▄▄▄▄▄██▄██▄██▄▄▄▄▄▄▄██▄▄▄█<br>
-                    ████████████████████████████████
-                </div>
-                <p style="margin-top: var(--space-8); font-size: var(--font-size-xs);">
-                    Scan to join meeting on mobile
-                </p>
-            `;
+            qrContainer.innerHTML = '';
+            // Generate QR code using QRCode.js
+            new QRCode(qrContainer, {
+                text: url,
+                width: 128,
+                height: 128,
+                colorDark: "#000000",
+                colorLight: "#ffffff",
+                correctLevel: QRCode.CorrectLevel.H
+            });
+            const info = document.createElement('p');
+            info.style.marginTop = '8px';
+            info.style.fontSize = 'var(--font-size-xs)';
+            info.textContent = 'Scan to join meeting on mobile';
+            qrContainer.appendChild(info);
         }
     }
     
