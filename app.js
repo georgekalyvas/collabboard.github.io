@@ -1447,7 +1447,7 @@ class CollabBoard {
         this.generateQRCode(shareUrl);
     }
     
-    generateQRCode(url) {
+    generateQRCode(url, retryCount = 0) {
         const qrContainer = document.getElementById('qr-code');
         if (!qrContainer) {
             console.error('QR code container not found');
@@ -1463,15 +1463,21 @@ class CollabBoard {
         try {
             // Check if QRCode library is loaded
             if (typeof QRCode === 'undefined') {
-                console.error('QRCode library not loaded - waiting for library...');
-                // Try to wait a bit and retry
-                setTimeout(() => {
-                    if (typeof QRCode !== 'undefined') {
-                        this.generateQRCode(url);
-                    } else {
-                        qrContainer.innerHTML = '<p style="color: var(--color-error); text-align: center;">QR Code library not available</p>';
-                    }
-                }, 500);
+                console.warn(`QRCode library not loaded yet - attempt ${retryCount + 1}/5`);
+                
+                // Show loading message
+                qrContainer.innerHTML = '<p style="color: var(--color-text-secondary); text-align: center; font-size: var(--font-size-sm);">Generating QR code...</p>';
+                
+                // Retry up to 5 times with increasing delays
+                if (retryCount < 5) {
+                    const delay = (retryCount + 1) * 200; // 200ms, 400ms, 600ms, 800ms, 1000ms
+                    setTimeout(() => {
+                        this.generateQRCode(url, retryCount + 1);
+                    }, delay);
+                } else {
+                    console.error('QRCode library failed to load after 5 attempts');
+                    qrContainer.innerHTML = '<p style="color: var(--color-error); text-align: center; font-size: var(--font-size-sm);">QR Code library unavailable. Please refresh the page.</p>';
+                }
                 return;
             }
             
@@ -1514,7 +1520,8 @@ class CollabBoard {
             qrWrapper.appendChild(info);
             
             qrContainer.appendChild(qrWrapper);
-            console.log('QR code generated successfully for board:', this.boardId);
+            console.log('✓ QR code generated successfully for board:', this.boardId);
+            console.log('✓ QR code encodes URL:', url);
         } catch (error) {
             console.error('Error generating QR code:', error);
             qrContainer.innerHTML = '<p style="color: var(--color-error); text-align: center; font-size: var(--font-size-sm);">Failed to generate QR code</p>';
