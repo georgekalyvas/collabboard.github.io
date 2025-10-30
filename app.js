@@ -274,9 +274,11 @@ class CollabBoard {
         // Analytics navigation
         const backToBoardBtn = document.getElementById('back-to-board-btn');
         const exportAnalyticsBtn = document.getElementById('export-analytics-btn');
+        const exportAnalyticsJsonBtn = document.getElementById('export-analytics-json-btn');
         
         if (backToBoardBtn) backToBoardBtn.addEventListener('click', () => this.showBoardPage());
         if (exportAnalyticsBtn) exportAnalyticsBtn.addEventListener('click', () => this.exportAnalytics());
+        if (exportAnalyticsJsonBtn) exportAnalyticsJsonBtn.addEventListener('click', () => this.exportAnalyticsJSON());
         
         // Deck navigation
         const backFromDeckBtn = document.getElementById('back-to-board-from-deck-btn');
@@ -1569,8 +1571,106 @@ class CollabBoard {
         }
     }
     
+    // Small helper to toggle loading state on buttons
+    setButtonLoading(btn, isLoading, loadingText = 'Exporting…') {
+        if (!btn) return;
+        if (isLoading) {
+            btn.dataset.originalText = btn.textContent;
+            btn.textContent = loadingText;
+            btn.setAttribute('aria-busy', 'true');
+            btn.disabled = true;
+        } else {
+            const original = btn.dataset.originalText || btn.textContent;
+            btn.textContent = original;
+            btn.removeAttribute('aria-busy');
+            btn.disabled = false;
+        }
+    }
+    
+    // Add footer to all pages in a PDF (title/date on left, page numbers on right)
+    addPdfFooter(pdf, titleText) {
+        const total = pdf.getNumberOfPages();
+        for (let i = 1; i <= total; i++) {
+            pdf.setPage(i);
+            const pw = pdf.internal.pageSize.getWidth();
+            const ph = pdf.internal.pageSize.getHeight();
+            const margin = 40;
+            pdf.setFontSize(9);
+            pdf.setTextColor(100);
+            pdf.text(titleText, margin, ph - 16);
+            pdf.text(`Page ${i} of ${total}`, pw - margin, ph - 16, { align: 'right' });
+        }
+        // Reset text color
+        pdf.setTextColor(0);
+    }
+    
     exportDeck() {
-        this.showSuccess('Comprehensive presentation deck exported successfully!');
+        (async () => {
+            const btn = document.getElementById('export-deck-btn');
+            try {
+                this.setButtonLoading(btn, true, 'Exporting deck…');
+                // Ensure required libs are available
+                const hasJsPDF = window.jspdf && window.jspdf.jsPDF;
+                const hasHtml2Canvas = typeof window.html2canvas === 'function';
+                if (!hasJsPDF || !hasHtml2Canvas) {
+                    this.showError('Export dependencies not loaded. Please ensure network access and try again.');
+                    return;
+                }
+
+                // Ensure slides are generated
+                if (!this.slides || this.slides.length === 0) {
+                    this.generateComprehensiveSlides();
+                }
+
+                const { jsPDF } = window.jspdf;
+                // Landscape A4 for slide-like layout
+                const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+                const pageWidth = pdf.internal.pageSize.getWidth();
+                const pageHeight = pdf.internal.pageSize.getHeight();
+
+                // Build an offscreen container for rendering each slide snapshot
+                const container = document.createElement('div');
+                container.style.position = 'fixed';
+                container.style.left = '-20000px';
+                container.style.top = '0';
+                container.style.width = '1200px'; // base render width
+                container.style.background = '#ffffff';
+                document.body.appendChild(container);
+
+                for (let i = 0; i < this.slides.length; i++) {
+                    container.innerHTML = `
+                        <div class="slide" style="width: 1200px; min-height: 675px; padding: 24px; background: #ffffff; color: var(--color-text);">
+                            ${this.slides[i].content}
+                        </div>
+                    `;
+                    // Allow layout to settle
+                    await new Promise(r => setTimeout(r, 50));
+                    const node = container.firstElementChild;
+                    const canvas = await window.html2canvas(node, { backgroundColor: '#ffffff', scale: 2, useCORS: true });
+                    const imgData = canvas.toDataURL('image/png');
+
+                    // Scale to fit within PDF page while preserving aspect ratio
+                    const imgW = pageWidth;
+                    const imgH = canvas.height * (imgW / canvas.width);
+                    if (i > 0) pdf.addPage();
+                    const y = Math.max(0, (pageHeight - imgH) / 2);
+                    pdf.addImage(imgData, 'PNG', 0, y, imgW, imgH);
+                }
+
+                document.body.removeChild(container);
+                const safeTitle = (this.currentBoard?.title || 'Deck').replace(/[/\\:*?\"<>|]+/g, ' ');
+                // Add consistent footer after all pages are generated
+                const footerLeft = `${this.currentBoard?.title || 'CollabBoard'} • ${new Date().toLocaleString()}`;
+                this.addPdfFooter(pdf, footerLeft);
+                pdf.save(`CollabBoard - ${safeTitle} - Deck.pdf`);
+                this.showSuccess('Presentation deck exported as PDF');
+            } catch (err) {
+                console.error('Export deck failed:', err);
+                this.showError('Failed to export deck: ' + (err?.message || err));
+            } finally {
+                this.setButtonLoading(btn, false);
+            }
+        })();
     }
     
     // Analytics methods
@@ -1586,7 +1686,128 @@ class CollabBoard {
     }
     
     exportAnalytics() {
-        this.showSuccess('Analytics data exported successfully!');
+        const btn = document.getElementById('export-analytics-btn');
+        try {
+            this.setButtonLoading(btn, true, 'Exporting PDF…');
+            const hasJsPDF = window.jspdf && window.jspdf.jsPDF;
+            if (!hasJsPDF) {
+                this.showError('PDF export library not loaded. Please check your connection and try again.');
+                return;
+            }
+            if (!this.analytics) {
+                this.initAnalytics();
+            }
+            // Ensure charts are rendered
+            this.analytics.renderDashboard();
+
+            const { jsPDF } = window.jspdf;
+            const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+            const pw = pdf.internal.pageSize.getWidth();
+            const ph = pdf.internal.pageSize.getHeight();
+
+            const margin = 40;
+            let y = margin;
+
+            // Title and summary
+            pdf.setFontSize(18);
+            pdf.text('Meeting Analytics Report', margin, y);
+            y += 24;
+            pdf.setFontSize(12);
+            const generatedAt = new Date().toLocaleString();
+            const analytics = this.calculateMeetingAnalytics();
+            const title = this.currentBoard?.title || 'Untitled Meeting';
+
+            pdf.text(`Title: ${title}`, margin, y); y += 18;
+            pdf.text(`Generated: ${generatedAt}`, margin, y); y += 18;
+            pdf.text(`Participants: ${this.currentBoard.participants.length}`, margin, y); y += 18;
+            pdf.text(`Agenda Items: ${this.currentBoard.agendaItems.length}`, margin, y); y += 18;
+            pdf.text(`Efficiency: ${analytics.efficiency}%`, margin, y); y += 18;
+            pdf.text(`Consensus: ${analytics.consensusRate}%`, margin, y); y += 24;
+
+            // Helper to add a chart by canvas id
+            const addChart = (canvasId, titleText) => {
+                const canvas = document.getElementById(canvasId);
+                if (!canvas) return false;
+                const imgData = canvas.toDataURL('image/png');
+                const maxW = pw - margin * 2;
+                const scale = maxW / canvas.width;
+                const imgW = maxW;
+                const imgH = canvas.height * scale;
+                if (y + 24 + imgH > ph - margin) {
+                    pdf.addPage();
+                    y = margin;
+                }
+                pdf.setFontSize(14);
+                pdf.text(titleText, margin, y);
+                y += 12;
+                pdf.addImage(imgData, 'PNG', margin, y, imgW, imgH);
+                y += imgH + 16;
+                return true;
+            };
+
+            addChart('progress-chart', 'Meeting Progress');
+            addChart('participation-chart', 'Participation Analysis');
+            addChart('decisions-chart', 'Decision Outcomes');
+
+            // Detailed results page
+            pdf.addPage();
+            y = margin;
+            pdf.setFontSize(16);
+            pdf.text('Detailed Results', margin, y);
+            y += 22;
+            pdf.setFontSize(11);
+            const items = this.currentBoard.agendaItems;
+            items.forEach((item, idx) => {
+                const line = `${idx + 1}. ${item.title} — ${item.typeConfig?.name || item.type} — Status: ${item.status}`;
+                // Wrap text if needed
+                const wrapped = pdf.splitTextToSize(line, pw - margin * 2);
+                if (y + wrapped.length * 14 > ph - margin) {
+                    pdf.addPage();
+                    y = margin;
+                }
+                pdf.text(wrapped, margin, y);
+                y += wrapped.length * 14 + 6;
+            });
+
+            const safeTitle = title.replace(/[/\\:*?"<>|]+/g, ' ');
+            // Footer across all pages
+            const footerLeft = `${title} • ${generatedAt}`;
+            this.addPdfFooter(pdf, footerLeft);
+            pdf.save(`CollabBoard - ${safeTitle} - Analytics.pdf`);
+            this.showSuccess('Analytics report exported as PDF');
+        } catch (err) {
+            console.error('Export analytics failed:', err);
+            this.showError('Failed to export analytics: ' + (err?.message || err));
+        } finally {
+            this.setButtonLoading(btn, false);
+        }
+    }
+    
+    exportAnalyticsJSON() {
+        const btn = document.getElementById('export-analytics-json-btn');
+        try {
+            this.setButtonLoading(btn, true, 'Exporting JSON…');
+            if (!this.analytics) {
+                this.initAnalytics();
+            }
+            const report = this.analytics.generateReport();
+            const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            const safeTitle = (this.currentBoard?.title || 'Meeting').replace(/[/\\:*?\"<>|]+/g, ' ');
+            a.href = url;
+            a.download = `CollabBoard - ${safeTitle} - Analytics.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            this.showSuccess('Analytics data exported as JSON');
+        } catch (err) {
+            console.error('Export analytics JSON failed:', err);
+            this.showError('Failed to export JSON: ' + (err?.message || err));
+        } finally {
+            this.setButtonLoading(btn, false);
+        }
     }
     
     // Share functionality
