@@ -1439,22 +1439,58 @@ class CollabBoard {
     
     generateQRCode(url) {
         const qrContainer = document.getElementById('qr-code');
-        if (qrContainer) {
-            qrContainer.innerHTML = '';
+        if (!qrContainer) {
+            console.error('QR code container not found');
+            return;
+        }
+        
+        // Clear previous QR code
+        qrContainer.innerHTML = '';
+        
+        try {
+            // Check if QRCode library is loaded
+            if (typeof QRCode === 'undefined') {
+                console.error('QRCode library not loaded');
+                qrContainer.innerHTML = '<p style="color: var(--color-error); text-align: center;">QR Code library not available</p>';
+                return;
+            }
+            
+            // Create wrapper for better styling
+            const qrWrapper = document.createElement('div');
+            qrWrapper.style.display = 'flex';
+            qrWrapper.style.flexDirection = 'column';
+            qrWrapper.style.alignItems = 'center';
+            qrWrapper.style.padding = 'var(--space-16)';
+            qrWrapper.style.backgroundColor = 'var(--color-white)';
+            qrWrapper.style.borderRadius = 'var(--radius-base)';
+            qrWrapper.style.margin = '0 auto';
+            qrWrapper.style.maxWidth = '200px';
+            
             // Generate QR code using QRCode.js
-            new QRCode(qrContainer, {
+            new QRCode(qrWrapper, {
                 text: url,
-                width: 128,
-                height: 128,
+                width: 160,
+                height: 160,
                 colorDark: "#000000",
                 colorLight: "#ffffff",
                 correctLevel: QRCode.CorrectLevel.H
             });
+            
+            // Add info text
             const info = document.createElement('p');
-            info.style.marginTop = '8px';
-            info.style.fontSize = 'var(--font-size-xs)';
+            info.style.marginTop = 'var(--space-12)';
+            info.style.marginBottom = '0';
+            info.style.fontSize = 'var(--font-size-sm)';
+            info.style.color = 'var(--color-text-secondary)';
+            info.style.textAlign = 'center';
             info.textContent = 'Scan to join meeting on mobile';
-            qrContainer.appendChild(info);
+            qrWrapper.appendChild(info);
+            
+            qrContainer.appendChild(qrWrapper);
+            console.log('QR code generated successfully');
+        } catch (error) {
+            console.error('Error generating QR code:', error);
+            qrContainer.innerHTML = '<p style="color: var(--color-error); text-align: center; font-size: var(--font-size-sm);">Failed to generate QR code</p>';
         }
     }
     

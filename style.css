@@ -1762,8 +1762,15 @@ select.form-control {
   padding: var(--space-20);
   background-color: var(--color-bg-1);
   border-radius: var(--radius-base);
-  font-family: var(--font-family-mono);
-  font-size: var(--font-size-sm);
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.qr-code-container img {
+  display: block;
+  margin: 0 auto;
 }
 
 .share-options {
