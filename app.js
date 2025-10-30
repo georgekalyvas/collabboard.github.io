@@ -1424,6 +1424,13 @@ class CollabBoard {
     
     // Share functionality
     showShareModal() {
+        // Ensure we have a board ID
+        if (!this.boardId) {
+            console.error('No board ID available for sharing');
+            this.showError('Unable to generate share link - no board ID');
+            return;
+        }
+        
         const shareUrl = `${window.location.origin}${window.location.pathname}?board=${this.boardId}`;
         const shareLinkInput = document.getElementById('share-link');
         const shareModal = document.getElementById('share-modal');
@@ -1433,8 +1440,11 @@ class CollabBoard {
         if (shareModal) shareModal.classList.remove('hidden');
         if (copySuccess) copySuccess.classList.add('hidden');
         
-        this.generateQRCode(shareUrl);
         console.log('Share modal opened with URL:', shareUrl);
+        console.log('Board ID:', this.boardId);
+        
+        // Generate QR code with the unique board URL
+        this.generateQRCode(shareUrl);
     }
     
     generateQRCode(url) {
@@ -1444,14 +1454,31 @@ class CollabBoard {
             return;
         }
         
+        console.log('Generating QR code for URL:', url);
+        console.log('Board ID:', this.boardId);
+        
         // Clear previous QR code
         qrContainer.innerHTML = '';
         
         try {
             // Check if QRCode library is loaded
             if (typeof QRCode === 'undefined') {
-                console.error('QRCode library not loaded');
-                qrContainer.innerHTML = '<p style="color: var(--color-error); text-align: center;">QR Code library not available</p>';
+                console.error('QRCode library not loaded - waiting for library...');
+                // Try to wait a bit and retry
+                setTimeout(() => {
+                    if (typeof QRCode !== 'undefined') {
+                        this.generateQRCode(url);
+                    } else {
+                        qrContainer.innerHTML = '<p style="color: var(--color-error); text-align: center;">QR Code library not available</p>';
+                    }
+                }, 500);
+                return;
+            }
+            
+            // Verify URL contains board ID
+            if (!url.includes('board=')) {
+                console.error('Invalid URL - missing board parameter:', url);
+                qrContainer.innerHTML = '<p style="color: var(--color-error); text-align: center;">Invalid board URL</p>';
                 return;
             }
             
@@ -1487,7 +1514,7 @@ class CollabBoard {
             qrWrapper.appendChild(info);
             
             qrContainer.appendChild(qrWrapper);
-            console.log('QR code generated successfully');
+            console.log('QR code generated successfully for board:', this.boardId);
         } catch (error) {
             console.error('Error generating QR code:', error);
             qrContainer.innerHTML = '<p style="color: var(--color-error); text-align: center; font-size: var(--font-size-sm);">Failed to generate QR code</p>';
