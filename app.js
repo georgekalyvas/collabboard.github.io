@@ -1306,6 +1306,173 @@ class CollabBoard {
                 </div>
             `
         });
+        
+        // Generate slides for each agenda item
+        this.currentBoard.agendaItems.forEach((item, index) => {
+            const itemConfig = this.itemTypes.voting[item.type] || this.itemTypes.no_voting[item.type];
+            const itemTypeName = itemConfig ? itemConfig.name : item.type;
+            
+            // Build the slide content
+            let slideContent = `
+                <div class="slide-content">
+                    <h2>Item ${index + 1}: ${item.title}</h2>
+                    <div style="margin-bottom: var(--space-16);">
+                        <span class="item-type-badge ${item.category}">${itemTypeName}</span>
+                        <span class="item-status ${item.status}">${item.status.charAt(0).toUpperCase() + item.status.slice(1)}</span>
+                    </div>
+            `;
+            
+            // Add description if available
+            if (item.description) {
+                slideContent += `
+                    <div style="margin-bottom: var(--space-20); padding: var(--space-16); background: var(--color-secondary); border-radius: var(--radius-md);">
+                        <h4 style="margin-bottom: var(--space-8);">Description</h4>
+                        <p style="color: var(--color-text-secondary);">${item.description}</p>
+                    </div>
+                `;
+            }
+            
+            // Add presenter if available
+            if (item.presenter) {
+                slideContent += `
+                    <div style="margin-bottom: var(--space-16);">
+                        <strong>Presenter:</strong> ${item.presenter}
+                    </div>
+                `;
+            }
+            
+            // Add estimated time if available
+            if (item.estimatedTime) {
+                slideContent += `
+                    <div style="margin-bottom: var(--space-16);">
+                        <strong>Estimated Time:</strong> ${item.estimatedTime} minutes
+                    </div>
+                `;
+            }
+            
+            // Add voting results for voting items
+            if (item.category === 'voting' && item.votes) {
+                slideContent += `
+                    <div style="margin-top: var(--space-24);">
+                        <h3 style="margin-bottom: var(--space-16);">Voting Results</h3>
+                        <div class="voting-results">
+                `;
+                
+                // Calculate total votes
+                const totalVotes = Object.values(item.votes).reduce((sum, count) => sum + count, 0);
+                
+                // Display each vote option with bar graph
+                Object.entries(item.votes).forEach(([option, count]) => {
+                    const percentage = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0;
+                    slideContent += `
+                        <div class="vote-result" style="margin-bottom: var(--space-12);">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: var(--space-4);">
+                                <span style="font-weight: var(--font-weight-medium);">${this.getVoteOptionDisplay(option)}</span>
+                                <span>${count} vote${count !== 1 ? 's' : ''} (${percentage}%)</span>
+                            </div>
+                            <div class="vote-bar">
+                                <div class="vote-progress" style="width: ${percentage}%"></div>
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                slideContent += `
+                        </div>
+                        <div style="margin-top: var(--space-16); padding: var(--space-12); background: var(--color-secondary); border-radius: var(--radius-md); text-align: center;">
+                            <strong>Total Votes:</strong> ${totalVotes} / ${this.currentBoard.participants.length} participants
+                        </div>
+                `;
+                
+                // Add threshold information if applicable
+                const threshold = this.getStatusThreshold(item);
+                if (threshold) {
+                    slideContent += `
+                        <div style="margin-top: var(--space-12); padding: var(--space-12); background: var(--color-info); color: var(--color-text); border-radius: var(--radius-md); text-align: center;">
+                            <strong>Threshold:</strong> ${threshold}
+                        </div>
+                    `;
+                }
+                
+                slideContent += `
+                    </div>
+                `;
+            }
+            
+            // Add completion status for non-voting items
+            if (item.category === 'no-voting') {
+                slideContent += `
+                    <div style="margin-top: var(--space-24);">
+                        <h3 style="margin-bottom: var(--space-16);">Status</h3>
+                        <div style="padding: var(--space-16); background: var(--color-secondary); border-radius: var(--radius-md); text-align: center;">
+                            <span class="item-status ${item.status}" style="font-size: var(--font-size-lg);">
+                                ${item.status === 'completed' ? '✓ Completed' : 'Pending Review'}
+                            </span>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            slideContent += `
+                </div>
+            `;
+            
+            // Add the slide
+            this.slides.push({
+                title: item.title,
+                type: 'agenda-item',
+                itemId: item.id,
+                content: slideContent
+            });
+        });
+        
+        // Add summary slide at the end
+        const analytics = this.calculateMeetingAnalytics();
+        this.slides.push({
+            title: 'Meeting Summary',
+            type: 'summary',
+            content: `
+                <div class="slide-content">
+                    <h2>Meeting Summary</h2>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-24); margin-top: var(--space-32);">
+                        <div>
+                            <h3 style="margin-bottom: var(--space-16);">Overview</h3>
+                            <div style="display: flex; flex-direction: column; gap: var(--space-12);">
+                                <div style="padding: var(--space-12); background: var(--color-secondary); border-radius: var(--radius-md);">
+                                    <div class="summary-count">${this.currentBoard.agendaItems.length}</div>
+                                    <div>Total Agenda Items</div>
+                                </div>
+                                <div style="padding: var(--space-12); background: var(--color-secondary); border-radius: var(--radius-md);">
+                                    <div class="summary-count">${analytics.completedItems}</div>
+                                    <div>Completed Items</div>
+                                </div>
+                                <div style="padding: var(--space-12); background: var(--color-secondary); border-radius: var(--radius-md);">
+                                    <div class="summary-count">${analytics.participationRate}%</div>
+                                    <div>Participation Rate</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <h3 style="margin-bottom: var(--space-16);">Decisions</h3>
+                            <div style="display: flex; flex-direction: column; gap: var(--space-12);">
+                                <div style="padding: var(--space-12); background: var(--color-success); color: var(--color-white); border-radius: var(--radius-md);">
+                                    <div class="summary-count">${analytics.approvedCount}</div>
+                                    <div>Approved</div>
+                                </div>
+                                <div style="padding: var(--space-12); background: var(--color-error); color: var(--color-white); border-radius: var(--radius-md);">
+                                    <div class="summary-count">${analytics.rejectedCount}</div>
+                                    <div>Rejected</div>
+                                </div>
+                                <div style="padding: var(--space-12); background: var(--color-warning); color: var(--color-white); border-radius: var(--radius-md);">
+                                    <div class="summary-count">${analytics.pendingCount}</div>
+                                    <div>Pending</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `
+        });
     }
     
     // Additional methods for slide generation, analytics, and utilities...
