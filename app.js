@@ -15,6 +15,12 @@ class CollabBoard {
             channel: null,
             lastUpdateTs: 0
         };
+        this.supa = {
+            client: null,
+            user: null,
+            enabled: false,
+            subscriptions: []
+        };
         this._presenceListenerAttached = false;
         
         // Complete item types configuration
@@ -193,6 +199,7 @@ class CollabBoard {
             this.setupColorVisionToggle();
             this.checkUrlForBoard();
             this.initAnalytics();
+            this.initSupabase();
             this.setupPresenceHandlers();
             
             // Auto-sync every 3 seconds
@@ -206,6 +213,88 @@ class CollabBoard {
         } catch (error) {
             console.error('Error initializing CollabBoard:', error);
         }
+    }
+
+    async initSupabase() {
+        try {
+            if (typeof window !== 'undefined' && window.SUPABASE_URL && window.SUPABASE_ANON_KEY && window.SUPABASE_URL.startsWith('http')) {
+                if (typeof supabase === 'undefined' || !window.supabase) {
+                    console.warn('Supabase library not loaded; skipping backend wiring');
+                    return;
+                }
+                this.supa.client = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
+                    auth: { persistSession: true, autoRefreshToken: true }
+                });
+                // Ensure anonymous auth
+                const { data: sessionRes } = await this.supa.client.auth.getSession();
+                if (!sessionRes || !sessionRes.session) {
+                    if (this.supa.client.auth.signInAnonymously) {
+                        await this.supa.client.auth.signInAnonymously();
+                    }
+                }
+                const { data: userRes } = await this.supa.client.auth.getUser();
+                this.supa.user = userRes && userRes.user ? userRes.user : null;
+                this.supa.enabled = !!this.supa.user;
+                if (this.supa.enabled) console.log('Supabase initialized. User:', this.supa.user.id);
+            }
+        } catch (e) {
+            console.warn('Supabase init failed:', e);
+            this.supa.enabled = false;
+        }
+    }
+
+    // --- Supabase helpers (scaffold) ---
+    async supaCreateBoard(title) {
+        if (!this.supa.enabled) return null;
+        const { data, error } = await this.supa.client
+            .from('boards')
+            .insert({ title, created_by: this.supa.user.id })
+            .select()
+            .single();
+        if (error) throw error;
+        return data;
+    }
+
+    async supaAddParticipant(boardId, name, role) {
+        if (!this.supa.enabled) return null;
+        const { data, error } = await this.supa.client
+            .from('participants')
+            .upsert({ board_id: boardId, user_id: this.supa.user.id, name, role, online: true, last_seen: new Date().toISOString() })
+            .select()
+            .single();
+        if (error) throw error;
+        return data;
+    }
+
+    async supaFetchParticipants(boardId) {
+        if (!this.supa.enabled) return [];
+        const { data, error } = await this.supa.client
+            .from('participants')
+            .select('*')
+            .eq('board_id', boardId)
+            .order('name');
+        if (error) throw error;
+        return data || [];
+    }
+
+    supaSubscribeParticipants(boardId) {
+        if (!this.supa.enabled) return;
+        // Clean previous
+        this.supa.subscriptions.forEach(ch => this.supa.client.removeChannel(ch));
+        this.supa.subscriptions = [];
+        const ch = this.supa.client.channel(`board-participants:${boardId}`)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'participants', filter: `board_id=eq.${boardId}` }, async (payload) => {
+                try {
+                    // Refresh participants list on any change
+                    const list = await this.supaFetchParticipants(boardId);
+                    this.currentBoard = this.currentBoard || { participants: [] };
+                    this.currentBoard.participants = list.map(p => ({ name: p.name, role: p.role, joined: p.joined_at, online: p.online, lastSeen: p.last_seen }));
+                    // Update info bar (creator not known here; leave as-is)
+                    this.updateParticipants();
+                } catch (e) { console.warn('Participant refresh failed:', e); }
+            })
+            .subscribe();
+        this.supa.subscriptions.push(ch);
     }
 
     setupPresenceHandlers() {
@@ -849,7 +938,7 @@ class CollabBoard {
                 console.warn('Could not persist admin token locally:', e);
             }
             
-            if (this.saveBoard(this.boardId, boardData)) {
+            const afterLocalSave = () => {
                 this.currentBoard = boardData;
                 
                 // Generate shareable URL with embedded data
@@ -861,6 +950,27 @@ class CollabBoard {
 
                 this.showBoardPage();
                 this.showSuccess('Board created successfully! Share the link to invite participants.');
+            };
+
+            if (this.supa && this.supa.enabled) {
+                // Create board in Supabase and register admin participant
+                this.supaCreateBoard(meetingTitle)
+                    .then(async (row) => {
+                        this.boardId = row.id;
+                        await this.supaAddParticipant(this.boardId, creatorName, 'admin');
+                        // Fetch fresh participants list into currentBoard
+                        const plist = await this.supaFetchParticipants(this.boardId);
+                        boardData.boardId = row.id;
+                        boardData.participants = plist.map(p => ({ name: p.name, role: p.role, joined: p.joined_at, online: p.online, lastSeen: p.last_seen }));
+                        this.supaSubscribeParticipants(this.boardId);
+                        afterLocalSave();
+                    })
+                    .catch(err => {
+                        console.warn('Supabase createBoard failed, falling back to local:', err);
+                        if (this.saveBoard(this.boardId, boardData)) afterLocalSave(); else this.showError('Failed to save board data');
+                    });
+            } else if (this.saveBoard(this.boardId, boardData)) {
+                afterLocalSave();
             } else {
                 this.showError('Failed to save board data');
             }
@@ -900,7 +1010,8 @@ class CollabBoard {
                 this.showError('Board not found');
                 return;
             }
-            // Determine if this browser holds the original admin token
+            
+            // Determine if this browser holds the original admin token (local fallback)
             let isOriginalAdmin = false;
             try {
                 const localToken = localStorage.getItem(`collab_board_adminToken_${this.boardId}`);
@@ -924,29 +1035,53 @@ class CollabBoard {
             
             console.log('User joining with role:', this.currentUser);
             
-            let existingParticipant = boardData.participants.find(p => p.name === participantName);
-            if (!existingParticipant) {
-                existingParticipant = { ...this.currentUser, online: true };
-                boardData.participants.push(existingParticipant);
+            if (this.supa && this.supa.enabled) {
+                // Register/mark online in Supabase and subscribe to changes
+                this.supaAddParticipant(this.boardId, participantName, this.currentUser.role)
+                    .then(async () => {
+                        const plist = await this.supaFetchParticipants(this.boardId);
+                        boardData.participants = plist.map(p => ({ name: p.name, role: p.role, joined: p.joined_at, online: p.online, lastSeen: p.last_seen }));
+                        this.currentBoard = boardData;
+                        this.supaSubscribeParticipants(this.boardId);
+                        this.meetingStartTime = boardData.startTime;
+                        // Initialize realtime listeners now that board is known
+                        this.initRealtime();
+                        this.showBoardPage();
+                        this.showSuccess(`Welcome to the meeting, ${participantName}!`);
+                    })
+                    .catch(err => {
+                        console.warn('Supabase join failed, falling back to local:', err);
+                        this._joinLocal(boardData, participantName);
+                    });
             } else {
-                // Update presence and role (role stays admin only if original device had token)
-                existingParticipant.role = this.currentUser.role;
-                existingParticipant.online = true;
-                existingParticipant.joined = existingParticipant.joined || new Date().toISOString();
+                this._joinLocal(boardData, participantName);
             }
-            // Persist immediately so other tabs reflect the new/online participant
-            this.saveBoard(this.boardId, boardData);
-
-            this.currentBoard = boardData;
-            this.meetingStartTime = boardData.startTime;
-            // Initialize realtime listeners now that board is known
-            this.initRealtime();
-            this.showBoardPage();
-            this.showSuccess(`Welcome to the meeting, ${participantName}!`);
         } catch (error) {
             console.error('Error joining board:', error);
             this.showError('Error joining board: ' + error.message);
         }
+    }
+
+    _joinLocal(boardData, participantName) {
+        let existingParticipant = boardData.participants.find(p => p.name === participantName);
+        if (!existingParticipant) {
+            existingParticipant = { ...this.currentUser, online: true };
+            boardData.participants.push(existingParticipant);
+        } else {
+            // Update presence and role (role stays admin only if original device had token)
+            existingParticipant.role = this.currentUser.role;
+            existingParticipant.online = true;
+            existingParticipant.joined = existingParticipant.joined || new Date().toISOString();
+        }
+        // Persist immediately so other tabs reflect the new/online participant
+        this.saveBoard(this.boardId, boardData);
+
+        this.currentBoard = boardData;
+        this.meetingStartTime = boardData.startTime;
+        // Initialize realtime listeners now that board is known
+        this.initRealtime();
+        this.showBoardPage();
+        this.showSuccess(`Welcome to the meeting, ${participantName}!`);
     }
     
     addAgendaItem() {

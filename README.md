@@ -1,6 +1,40 @@
 # CollabBoard
 
-CollabBoard is a professional board meeting platform designed to streamline board management with comprehensive voting options and auto-generated presentations for modern organizations.
+Professional board meeting platform with comprehensive agenda customizations, robust voting options, and auto-generated presentations.
+
+## Optional: Supabase Realtime Backend
+
+You can enable cross-device live updates and secure multi-user hosting by connecting a Supabase project. This preserves admin security via Row-Level Security (RLS) and gives live attendees/items/votes.
+
+### 1) Create a Supabase project
+- Go to https://supabase.com and create a project
+- Get your Project URL and anon key from Project Settings → API
+
+### 2) Apply the schema
+- In the Supabase SQL Editor, paste and run `tools/supabase_schema.sql`
+- This creates tables: boards, participants, items, votes and RLS policies
+
+### 3) Configure the app
+In `index.html`, set your values (or inject at runtime):
+
+```html
+<script>
+  window.SUPABASE_URL = 'https://YOUR-PROJECT.supabase.co';
+  window.SUPABASE_ANON_KEY = 'YOUR-ANON-KEY';
+</script>
+```
+
+### 4) How it works
+- The app initializes the Supabase client and anonymous auth
+- On create/join, it writes participants to the database
+- It subscribes to participant changes so new attendees appear live across devices
+- If Supabase is not configured, it gracefully falls back to local-only mode
+
+### 5) Next steps
+- Wire agenda items and votes to Supabase (currently local), using the same pattern
+- Optionally enable real Auth (magic links / OAuth) instead of anonymous auth
+- Add rate-limiting or CAPTCHA on join flows if you expose publicly
+
 
 ## Features
 
