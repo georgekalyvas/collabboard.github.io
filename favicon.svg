@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>CollabBoard favicon</title>
+  <desc>Two overlapping squares—green behind and purple in front</desc>
+  <!-- Green square (behind, slightly left and down) -->
+  <rect x="10" y="38" width="64" height="64" rx="10" fill="#34A853"/>
+  <!-- Purple square (front, slightly right and up) -->
+  <rect x="42" y="16" width="72" height="72" rx="12" fill="#6A0DAD"/>
+</svg>

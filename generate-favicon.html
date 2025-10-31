@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Generate Favicon</title>
+</head>
+<body>
+    <h2>Generating favicon files...</h2>
+    <canvas id="canvas" width="512" height="512"></canvas>
+    <div id="links"></div>
+    
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const linksDiv = document.getElementById('links');
+        
+        // Draw the favicon design
+        function drawFavicon(size) {
+            canvas.width = size;
+            canvas.height = size;
+            
+            ctx.clearRect(0, 0, size, size);
+            
+            const scale = size / 128;
+            
+            // Green square (behind, slightly left and down)
+            ctx.fillStyle = '#34A853';
+            roundRect(ctx, 10 * scale, 38 * scale, 64 * scale, 64 * scale, 10 * scale);
+            ctx.fill();
+            
+            // Purple square (front, slightly right and up)
+            ctx.fillStyle = '#6A0DAD';
+            roundRect(ctx, 42 * scale, 16 * scale, 72 * scale, 72 * scale, 12 * scale);
+            ctx.fill();
+        }
+        
+        function roundRect(ctx, x, y, width, height, radius) {
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.lineTo(x + width - radius, y);
+            ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+            ctx.lineTo(x + width, y + height - radius);
+            ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+            ctx.lineTo(x + radius, y + height);
+            ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+            ctx.lineTo(x, y + radius);
+            ctx.quadraticCurveTo(x, y, x + radius, y);
+            ctx.closePath();
+        }
+        
+        // Generate different sizes
+        const sizes = [
+            { size: 16, name: 'favicon-16x16.png' },
+            { size: 32, name: 'favicon-32x32.png' },
+            { size: 180, name: 'apple-touch-icon.png' },
+            { size: 192, name: 'android-chrome-192x192.png' },
+            { size: 512, name: 'android-chrome-512x512.png' }
+        ];
+        
+        sizes.forEach(({ size, name }) => {
+            drawFavicon(size);
+            const link = document.createElement('a');
+            link.download = name;
+            link.href = canvas.toDataURL('image/png');
+            link.textContent = `Download ${name}`;
+            link.style.display = 'block';
+            link.style.margin = '10px';
+            linksDiv.appendChild(link);
+        });
+        
+        console.log('Favicon files generated. Right-click each link to download.');
+    </script>
+</body>
+</html>
