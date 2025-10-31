@@ -521,7 +521,10 @@ class CollabBoard {
         
         if (boardId) {
             this.boardId = boardId;
-            const boardData = this.loadBoard(boardId);
+            
+            // First try to load from URL hash (for shared links)
+            const boardData = this.loadBoardFromUrl() || this.loadBoard(boardId);
+            
             if (boardData) {
                 console.log('Board found, showing join page');
                 this.showJoinPage(boardData);
@@ -701,7 +704,11 @@ class CollabBoard {
             
             if (this.saveBoard(this.boardId, boardData)) {
                 this.currentBoard = boardData;
-                window.history.pushState({}, '', `?board=${this.boardId}`);
+                
+                // Generate shareable URL with embedded data
+                const shareableUrl = this.getShareableUrl();
+                window.history.pushState({}, '', shareableUrl);
+                
                 this.showBoardPage();
                 this.showSuccess('Board created successfully! Share the link to invite participants.');
             } else {
@@ -1819,7 +1826,8 @@ class CollabBoard {
             return;
         }
         
-        const shareUrl = `${window.location.origin}${window.location.pathname}?board=${this.boardId}`;
+        // Generate shareable URL with embedded data
+        const shareUrl = this.getShareableUrl();
         const shareLinkInput = document.getElementById('share-link');
         const shareModal = document.getElementById('share-modal');
         const copySuccess = document.getElementById('copy-success');
@@ -1828,10 +1836,11 @@ class CollabBoard {
         if (shareModal) shareModal.classList.remove('hidden');
         if (copySuccess) copySuccess.classList.add('hidden');
         
-        console.log('Share modal opened with URL:', shareUrl);
+        console.log('Share modal opened with shareable URL');
         console.log('Board ID:', this.boardId);
+        console.log('URL includes embedded board data for cross-browser sharing');
         
-        // Generate QR code with the unique board URL
+        // Generate QR code with the shareable URL
         this.generateQRCode(shareUrl);
     }
     
@@ -1951,16 +1960,16 @@ class CollabBoard {
     }
     
     shareViaEmail() {
-        const shareUrl = `${window.location.origin}${window.location.pathname}?board=${this.boardId}`;
+        const shareUrl = this.getShareableUrl();
         const subject = encodeURIComponent(`Join Board Meeting: ${this.currentBoard.title}`);
-        const body = encodeURIComponent(`You're invited to join the comprehensive board meeting "${this.currentBoard.title}".\n\nClick here to join: ${shareUrl}\n\nMeeting created by: ${this.currentBoard.creator}`);
+        const body = encodeURIComponent(`You're invited to join the comprehensive board meeting "${this.currentBoard.title}".\n\nClick here to join: ${shareUrl}\n\nMeeting created by: ${this.currentBoard.creator}\n\nNote: This link contains all meeting data and works across any browser.`);
         
         window.open(`mailto:?subject=${subject}&body=${body}`, '_blank');
         this.showSuccess('Email client opened with meeting invitation');
     }
     
     shareViaTeams() {
-        const shareUrl = `${window.location.origin}${window.location.pathname}?board=${this.boardId}`;
+        const shareUrl = this.getShareableUrl();
         const message = encodeURIComponent(`Join comprehensive board meeting: ${this.currentBoard.title} - ${shareUrl}`);
         
         window.open(`https://teams.microsoft.com/l/chat/0/0?users=&message=${message}`, '_blank');
@@ -1968,7 +1977,7 @@ class CollabBoard {
     }
     
     shareViaSlack() {
-        const shareUrl = `${window.location.origin}${window.location.pathname}?board=${this.boardId}`;
+        const shareUrl = this.getShareableUrl();
         const text = encodeURIComponent(`Join our comprehensive board meeting: ${this.currentBoard.title} - ${shareUrl}`);
         
         window.open(`https://slack.com/intl/en-us/help/articles/201330736-Add-apps-to-your-Slack-workspace?text=${text}`, '_blank');
@@ -2004,7 +2013,8 @@ class CollabBoard {
     syncBoard() {
         if (!this.boardId) return;
         
-        const latestBoard = this.loadBoard(this.boardId);
+        // Try to load from URL first (for shared boards), then fallback to local storage
+        const latestBoard = this.loadBoardFromUrl() || this.loadBoard(this.boardId);
         if (!latestBoard) return;
         
         const currentHash = this.currentBoard ? JSON.stringify(this.currentBoard).length : 0;
@@ -2020,23 +2030,28 @@ class CollabBoard {
             }
         }
     }
-    
     saveBoard(boardId, boardData) {
         try {
+            // Save to localStorage for persistence
             localStorage.setItem(`collab_board_${boardId}`, JSON.stringify(boardData));
             console.log('Board saved to localStorage:', boardId);
+            
+            // Update URL with encoded board data for sharing
+            this.updateUrlWithBoardData(boardData);
             return true;
         } catch (e) {
             console.warn('localStorage failed, trying sessionStorage:', e);
             try {
                 sessionStorage.setItem(`collab_board_${boardId}`, JSON.stringify(boardData));
                 console.log('Board saved to sessionStorage:', boardId);
+                this.updateUrlWithBoardData(boardData);
                 return true;
             } catch (e2) {
                 console.warn('sessionStorage failed, using memory storage:', e2);
                 if (!window.memoryStorage) window.memoryStorage = {};
                 window.memoryStorage[`collab_board_${boardId}`] = boardData;
                 console.log('Board saved to memory storage:', boardId);
+                this.updateUrlWithBoardData(boardData);
                 return true;
             }
         }
@@ -2067,6 +2082,75 @@ class CollabBoard {
         
         console.log('Board not found in any storage:', boardId);
         return null;
+    }
+    
+    // New methods for URL-based data sharing
+    updateUrlWithBoardData(boardData) {
+        try {
+            // Compress and encode board data for URL
+            const compressed = this.compressBoardData(boardData);
+            const encoded = btoa(compressed);
+            
+            // Update URL hash without triggering page reload
+            const newUrl = `${window.location.pathname}?board=${boardData.boardId}#data=${encoded}`;
+            window.history.replaceState({}, '', newUrl);
+            
+            console.log('URL updated with board data for sharing');
+        } catch (e) {
+            console.warn('Failed to update URL with board data:', e);
+        }
+    }
+    
+    loadBoardFromUrl() {
+        try {
+            const hash = window.location.hash;
+            if (!hash || !hash.includes('data=')) {
+                return null;
+            }
+            
+            const encoded = hash.split('data=')[1];
+            const compressed = atob(encoded);
+            const boardData = this.decompressBoardData(compressed);
+            
+            console.log('Board loaded from URL:', boardData.boardId);
+            
+            // Save to localStorage for this browser too
+            if (boardData.boardId) {
+                try {
+                    localStorage.setItem(`collab_board_${boardData.boardId}`, JSON.stringify(boardData));
+                } catch (e) {
+                    console.warn('Could not save to localStorage:', e);
+                }
+            }
+            
+            return boardData;
+        } catch (e) {
+            console.warn('Failed to load board from URL:', e);
+            return null;
+        }
+    }
+    
+    compressBoardData(boardData) {
+        // Simple JSON stringify - in production, you could use LZString or similar
+        return JSON.stringify(boardData);
+    }
+    
+    decompressBoardData(compressed) {
+        // Simple JSON parse - matches compression method
+        return JSON.parse(compressed);
+    }
+    
+    getShareableUrl() {
+        if (!this.currentBoard) return '';
+        
+        try {
+            const compressed = this.compressBoardData(this.currentBoard);
+            const encoded = btoa(compressed);
+            return `${window.location.origin}${window.location.pathname}?board=${this.boardId}#data=${encoded}`;
+        } catch (e) {
+            console.warn('Failed to generate shareable URL:', e);
+            return `${window.location.origin}${window.location.pathname}?board=${this.boardId}`;
+        }
     }
 }
 
