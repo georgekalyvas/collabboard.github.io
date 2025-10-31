@@ -1890,20 +1890,22 @@ class CollabBoard {
             qrWrapper.style.display = 'flex';
             qrWrapper.style.flexDirection = 'column';
             qrWrapper.style.alignItems = 'center';
-            qrWrapper.style.padding = 'var(--space-16)';
+            qrWrapper.style.padding = 'var(--space-24)';
             qrWrapper.style.backgroundColor = 'var(--color-white)';
             qrWrapper.style.borderRadius = 'var(--radius-base)';
             qrWrapper.style.margin = '0 auto';
-            qrWrapper.style.maxWidth = '200px';
+            qrWrapper.style.maxWidth = '320px';
+            qrWrapper.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
             
             // Generate QR code using QRCode.js
+            // Using larger size (256x256) and Medium error correction for better readability
             new QRCode(qrWrapper, {
                 text: url,
-                width: 160,
-                height: 160,
+                width: 256,
+                height: 256,
                 colorDark: "#000000",
                 colorLight: "#ffffff",
-                correctLevel: QRCode.CorrectLevel.H
+                correctLevel: QRCode.CorrectLevel.M  // M provides good balance between redundancy and pattern density
             });
             
             // Add info text

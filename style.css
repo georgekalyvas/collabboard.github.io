@@ -1762,7 +1762,7 @@ select.form-control {
   padding: var(--space-20);
   background-color: var(--color-bg-1);
   border-radius: var(--radius-base);
-  min-height: 220px;
+  min-height: 340px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1771,6 +1771,10 @@ select.form-control {
 .qr-code-container img {
   display: block;
   margin: 0 auto;
+  /* QR code is now 256x256 for better readability */
+  image-rendering: crisp-edges;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: pixelated;
 }
 
 .share-options {
