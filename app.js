@@ -576,16 +576,14 @@ class CollabBoard {
         if (boardPage) {
             boardPage.classList.remove('hidden');
         }
-        
-        const isAdmin = this.currentUser.name === this.currentBoard.creator;
-        console.log('User is admin:', isAdmin, 'User:', this.currentUser.name, 'Creator:', this.currentBoard.creator);
-        
+        // Only allow admin view if user has correct adminToken
+        const isAdmin = this.currentUser && this.currentUser.role === 'admin' && this.currentUser.adminToken === this.currentBoard.adminToken;
+        console.log('User is admin:', isAdmin, 'User:', this.currentUser ? this.currentUser.name : '', 'AdminToken:', this.currentUser ? this.currentUser.adminToken : '');
         if (isAdmin) {
             document.body.classList.add('is-admin');
         } else {
             document.body.classList.remove('is-admin');
         }
-        
         this.updateBoardDisplay();
         this.updateQuickStats();
     }
@@ -670,20 +668,24 @@ class CollabBoard {
             this.boardId = this.generateBoardId();
             this.meetingStartTime = new Date().toISOString();
             
+            // Generate a per-session admin token so only the original creator gets admin UI
+            const adminToken = Math.random().toString(36).slice(2) + Date.now().toString(36);
             this.currentUser = {
                 name: creatorName,
                 role: 'admin',
-                joined: new Date().toISOString()
+                joined: new Date().toISOString(),
+                adminToken
             };
             
             const boardData = {
                 boardId: this.boardId,
                 title: meetingTitle,
                 creator: creatorName,
+                adminToken: adminToken,
                 created: new Date().toISOString(),
                 startTime: this.meetingStartTime,
                 participants: [
-                    {name: creatorName, role: 'admin', joined: new Date().toISOString()}
+                    {name: creatorName, role: 'admin', joined: new Date().toISOString(), adminToken: adminToken}
                 ],
                 agendaItems: [],
                 settings: {
@@ -701,6 +703,12 @@ class CollabBoard {
             };
             
             console.log('Board data created:', boardData);
+            // Persist admin token locally (not in share link) so the original creator retains admin on this device
+            try {
+                localStorage.setItem(`collab_board_adminToken_${this.boardId}`, adminToken);
+            } catch (e) {
+                console.warn('Could not persist admin token locally:', e);
+            }
             
             if (this.saveBoard(this.boardId, boardData)) {
                 this.currentBoard = boardData;
@@ -750,12 +758,21 @@ class CollabBoard {
                 this.showError('Board not found');
                 return;
             }
-            
-            const isAdmin = participantName === boardData.creator;
+            // Determine if this browser holds the original admin token
+            let isOriginalAdmin = false;
+            try {
+                const localToken = localStorage.getItem(`collab_board_adminToken_${this.boardId}`);
+                isOriginalAdmin = !!(participantName === boardData.creator && localToken && localToken === boardData.adminToken);
+            } catch (e) {
+                console.warn('Could not read admin token from localStorage:', e);
+            }
+
+            // Guests should never escalate to admin by name. Only the original creator on the original device can be admin.
             this.currentUser = {
                 name: participantName,
-                role: isAdmin ? 'admin' : 'member',
-                joined: new Date().toISOString()
+                role: isOriginalAdmin ? 'admin' : 'member',
+                joined: new Date().toISOString(),
+                ...(isOriginalAdmin ? { adminToken: boardData.adminToken } : {})
             };
             
             console.log('User joining with role:', this.currentUser);
@@ -812,7 +829,7 @@ class CollabBoard {
                 return;
             }
             
-            if (this.currentUser.name !== this.currentBoard.creator) {
+            if (this.currentUser.role !== 'admin') {
                 this.showError('Only the meeting creator can add agenda items');
                 return;
             }
@@ -1030,7 +1047,7 @@ class CollabBoard {
             if (currentUser) currentUser.textContent = this.currentUser.name;
             
             // Set user role
-            const isAdmin = this.currentUser.name === this.currentBoard.creator;
+            const isAdmin = this.currentUser.role === 'admin';
             const roleElement = document.getElementById('user-role');
             if (roleElement) {
                 roleElement.textContent = isAdmin ? 'Admin' : 'Member';
@@ -1095,7 +1112,7 @@ class CollabBoard {
         
         container.innerHTML = '';
         this.currentBoard.participants.forEach(participant => {
-            const isAdmin = participant.name === this.currentBoard.creator;
+            const isAdmin = participant.role === 'admin';
             const div = document.createElement('div');
             div.className = `participant ${isAdmin ? 'admin' : 'member'}`;
             div.innerHTML = `
@@ -1121,7 +1138,7 @@ class CollabBoard {
             document.getElementById('voting-items-section').style.display = 'none';
             document.getElementById('non-voting-items-section').style.display = 'none';
             
-            const message = this.currentUser.name === this.currentBoard.creator ? 
+            const message = this.currentUser.role === 'admin' ? 
                 'Add agenda items above to get started.' : 
                 'Waiting for the admin to add agenda items.';
             const messageEl = document.getElementById('empty-state-message');
@@ -1209,7 +1226,7 @@ class CollabBoard {
             } else {
                 // Add completion interface for non-voting items
                 const isCompleted = item.status === 'completed';
-                const isAdmin = this.currentUser.name === this.currentBoard.creator;
+                const isAdmin = this.currentUser.role === 'admin';
                 
                 contentHtml += `
                     <div class="completion-interface">
@@ -1804,6 +1821,8 @@ class CollabBoard {
             const footerLeft = `${title} • ${generatedAt}`;
             this.addPdfFooter(pdf, footerLeft);
             pdf.save(`CollabBoard - ${safeTitle} - Analytics.pdf`);
+            this.addPdfFooter(pdf, footerLeft);
+            pdf.save(`CollabBoard - ${safeTitle} - Analytics.pdf`);
             this.showSuccess('Analytics report exported as PDF');
         } catch (err) {
             console.error('Export analytics failed:', err);
@@ -2171,7 +2190,20 @@ class CollabBoard {
             // Save to localStorage for this browser too
             if (boardData.boardId) {
                 try {
-                    localStorage.setItem(`collab_board_${boardData.boardId}`, JSON.stringify(boardData));
+                    // Merge with existing stored board to preserve sensitive fields like adminToken
+                    const existingRaw = localStorage.getItem(`collab_board_${boardData.boardId}`);
+                    let merged = { ...boardData };
+                    if (existingRaw) {
+                        try {
+                            const existing = JSON.parse(existingRaw);
+                            if (existing && existing.adminToken) {
+                                merged.adminToken = existing.adminToken;
+                            }
+                        } catch (e) {
+                            // ignore parse errors and use boardData
+                        }
+                    }
+                    localStorage.setItem(`collab_board_${boardData.boardId}`, JSON.stringify(merged));
                 } catch (e) {
                     console.warn('Could not save to localStorage:', e);
                 }
@@ -2185,8 +2217,28 @@ class CollabBoard {
     }
     
     compressBoardData(boardData) {
-        // Simple JSON stringify - in production, you could use LZString or similar
-        return JSON.stringify(boardData);
+        // Remove sensitive fields before sharing (e.g., admin tokens)
+        try {
+            const clone = JSON.parse(JSON.stringify(boardData));
+            delete clone.adminToken;
+            if (Array.isArray(clone.participants)) {
+                clone.participants = clone.participants.map(p => {
+                    const { adminToken, ...rest } = p || {};
+                    return rest;
+                });
+            }
+            return JSON.stringify(clone);
+        } catch (e) {
+            // Fallback: avoid sharing sensitive data if cloning fails
+            const safe = {
+                ...boardData,
+                adminToken: undefined,
+                participants: Array.isArray(boardData.participants)
+                    ? boardData.participants.map(({ adminToken, ...rest }) => rest)
+                    : []
+            };
+            return JSON.stringify(safe);
+        }
     }
     
     decompressBoardData(compressed) {
