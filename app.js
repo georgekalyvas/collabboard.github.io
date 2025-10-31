@@ -11,6 +11,10 @@ class CollabBoard {
         this.charts = {};
         this.meetingStartTime = null;
         this.selectedItemType = null;
+        this.realtime = {
+            channel: null,
+            lastUpdateTs: 0
+        };
         
         // Complete item types configuration
         this.itemTypes = {
@@ -199,6 +203,55 @@ class CollabBoard {
             console.log('CollabBoard initialized successfully');
         } catch (error) {
             console.error('Error initializing CollabBoard:', error);
+        }
+    }
+
+    // Initialize realtime listeners once a board is known
+    initRealtime() {
+        if (!this.boardId) return;
+
+        // BroadcastChannel for same-origin tabs (fast, modern)
+        try {
+            if (!this.realtime.channel && 'BroadcastChannel' in window) {
+                this.realtime.channel = new BroadcastChannel('collab_board_channel');
+                this.realtime.channel.onmessage = (ev) => {
+                    const msg = ev.data || {};
+                    if (msg.type === 'board:update' && msg.boardId === this.boardId) {
+                        // Debounce rapid updates
+                        const now = Date.now();
+                        if (now - this.realtime.lastUpdateTs < 200) return;
+                        this.realtime.lastUpdateTs = now;
+                        this.syncBoard();
+                    }
+                };
+            }
+        } catch (e) {
+            console.warn('BroadcastChannel unavailable:', e);
+        }
+
+        // Storage event for cross-tab updates (fallback)
+        try {
+            if (!this._storageListenerAttached) {
+                window.addEventListener('storage', (e) => {
+                    const expectedKey = `collab_board_${this.boardId}`;
+                    if (e.key === expectedKey && e.newValue) {
+                        this.syncBoard();
+                    }
+                });
+                this._storageListenerAttached = true;
+            }
+        } catch (e) {
+            console.warn('Storage event listener failed:', e);
+        }
+
+        // Hash change (shared URL updates)
+        try {
+            if (!this._hashListenerAttached) {
+                window.addEventListener('hashchange', () => this.syncBoard());
+                this._hashListenerAttached = true;
+            }
+        } catch (e) {
+            console.warn('Hashchange listener failed:', e);
         }
     }
     
@@ -717,6 +770,9 @@ class CollabBoard {
                 const shareableUrl = this.getShareableUrl();
                 window.history.pushState({}, '', shareableUrl);
                 
+                // Initialize realtime listeners now that board is known
+                this.initRealtime();
+
                 this.showBoardPage();
                 this.showSuccess('Board created successfully! Share the link to invite participants.');
             } else {
@@ -785,6 +841,8 @@ class CollabBoard {
             
             this.currentBoard = boardData;
             this.meetingStartTime = boardData.startTime;
+            // Initialize realtime listeners now that board is known
+            this.initRealtime();
             this.showBoardPage();
             this.showSuccess(`Welcome to the meeting, ${participantName}!`);
         } catch (error) {
@@ -2111,6 +2169,8 @@ class CollabBoard {
             
             // Update URL with encoded board data for sharing
             this.updateUrlWithBoardData(boardData);
+            // Realtime notify other tabs
+            this._notifyRealtimeUpdate(boardId);
             return true;
         } catch (e) {
             console.warn('localStorage failed, trying sessionStorage:', e);
@@ -2118,6 +2178,7 @@ class CollabBoard {
                 sessionStorage.setItem(`collab_board_${boardId}`, JSON.stringify(boardData));
                 console.log('Board saved to sessionStorage:', boardId);
                 this.updateUrlWithBoardData(boardData);
+                this._notifyRealtimeUpdate(boardId);
                 return true;
             } catch (e2) {
                 console.warn('sessionStorage failed, using memory storage:', e2);
@@ -2125,8 +2186,19 @@ class CollabBoard {
                 window.memoryStorage[`collab_board_${boardId}`] = boardData;
                 console.log('Board saved to memory storage:', boardId);
                 this.updateUrlWithBoardData(boardData);
+                this._notifyRealtimeUpdate(boardId);
                 return true;
             }
+        }
+    }
+
+    _notifyRealtimeUpdate(boardId) {
+        try {
+            if (this.realtime && this.realtime.channel) {
+                this.realtime.channel.postMessage({ type: 'board:update', boardId });
+            }
+        } catch (e) {
+            // Non-fatal
         }
     }
     
