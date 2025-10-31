@@ -1840,8 +1840,10 @@ class CollabBoard {
         console.log('Board ID:', this.boardId);
         console.log('URL includes embedded board data for cross-browser sharing');
         
-        // Generate QR code with the shareable URL
-        this.generateQRCode(shareUrl);
+        // Generate QR code with simple board ID URL (without embedded data)
+        // QR codes have size limits, so we use a simpler URL format for scanning
+        const qrUrl = `${window.location.origin}${window.location.pathname}?board=${this.boardId}`;
+        this.generateQRCode(qrUrl);
     }
     
     generateQRCode(url, retryCount = 0) {
@@ -1852,6 +1854,7 @@ class CollabBoard {
         }
         
         console.log('Generating QR code for URL:', url);
+        console.log('URL length:', url.length);
         console.log('Board ID:', this.boardId);
         
         // Clear previous QR code
@@ -1882,6 +1885,27 @@ class CollabBoard {
             if (!url.includes('board=')) {
                 console.error('Invalid URL - missing board parameter:', url);
                 qrContainer.innerHTML = '<p style="color: var(--color-error); text-align: center;">Invalid board URL</p>';
+                return;
+            }
+            
+            // QR code size limits: 
+            // - Level L: ~2953 chars
+            // - Level M: ~2331 chars  
+            // - Level Q: ~1663 chars
+            // - Level H: ~1273 chars
+            // Check if URL is too long for QR code
+            if (url.length > 2000) {
+                console.warn('URL too long for QR code:', url.length, 'chars. Using simple board ID URL instead.');
+                qrContainer.innerHTML = `
+                    <div style="text-align: center; padding: var(--space-16); color: var(--color-text-secondary);">
+                        <p style="margin-bottom: var(--space-12); font-size: var(--font-size-sm);">
+                            ℹ️ Board has too much data for QR code
+                        </p>
+                        <p style="margin: 0; font-size: var(--font-size-xs);">
+                            Please share the link above instead
+                        </p>
+                    </div>
+                `;
                 return;
             }
             
@@ -1920,10 +1944,15 @@ class CollabBoard {
             
             qrContainer.appendChild(qrWrapper);
             console.log('✓ QR code generated successfully for board:', this.boardId);
-            console.log('✓ QR code encodes URL:', url);
+            console.log('✓ QR code encodes URL:', url.substring(0, 100) + '...');
         } catch (error) {
             console.error('Error generating QR code:', error);
-            qrContainer.innerHTML = '<p style="color: var(--color-error); text-align: center; font-size: var(--font-size-sm);">Failed to generate QR code</p>';
+            qrContainer.innerHTML = `
+                <div style="text-align: center; padding: var(--space-16); color: var(--color-error);">
+                    <p style="margin-bottom: var(--space-8); font-size: var(--font-size-sm);">Failed to generate QR code</p>
+                    <p style="margin: 0; font-size: var(--font-size-xs); color: var(--color-text-secondary);">${error.message || 'Unknown error'}</p>
+                </div>
+            `;
         }
     }
     
