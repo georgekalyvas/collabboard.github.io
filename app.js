@@ -5,13 +5,15 @@ class CollabBoard {
         this.currentUser = null;
         this.boardId = null;
         this.updateInterval = null;
-        this.currentSlide = 0;
         this.slides = [];
         this.analytics = null;
-        this.charts = {};
-        this.meetingStartTime = null;
         this.selectedItemType = null;
-        
+        this.boardPassphrase = null; // cached for session share actions
+        this.cacheTTLms = 7 * 24 * 60 * 60 * 1000; // 7 days TTL
+        this.encryptionEnabled = true; // Enable encryption for corporate use
+    this.shareExpiryMs = this.cacheTTLms; // default link expiry
+    this.boardPassHint = null; // optional passphrase hint
+
         // Complete item types configuration
         this.itemTypes = {
             voting: {
@@ -47,15 +49,7 @@ class CollabBoard {
                     requiresVoting: true
                 },
                 time_limited: { 
-                    name: "Time-Limited Vote", 
-                    description: "Vote with deadline", 
-                    options: ["Yes", "No", "Abstain"],
-                    hasDeadline: true,
-                    estimatedTime: 10,
-                    requiresVoting: true
-                },
-                anonymous: { 
-                    name: "Anonymous Vote", 
+                    name: "Secret Ballot",
                     description: "Secret ballot", 
                     options: ["Approve", "Reject", "Abstain"],
                     anonymous: true,
@@ -66,7 +60,6 @@ class CollabBoard {
                     name: "Proxy Vote", 
                     description: "Allow proxy voting", 
                     options: ["Yes", "No", "Abstain"],
-                    allowProxy: true,
                     estimatedTime: 15,
                     requiresVoting: true
                 },
@@ -513,59 +506,75 @@ class CollabBoard {
         }
     }
     
-    checkUrlForBoard() {
+    
+    
+    async checkUrlForBoard() {
         const urlParams = new URLSearchParams(window.location.search);
         const boardId = urlParams.get('board');
+        const encryptedPayloadQuery = urlParams.get('encrypted');
+        // Also parse hash fragment for encrypted payload
+        const hash = window.location.hash ? window.location.hash.substring(1) : '';
+        const hashParams = new URLSearchParams(hash);
+        const encryptedFlag = hashParams.get('enc');
+        const encryptedPayloadHash = hashParams.get('data') || hashParams.get('encrypted');
         
-        console.log('Checking URL for board:', boardId);
+    console.log('Checking URL for board:', boardId);
+    console.log('Has encrypted (query):', !!encryptedPayloadQuery, 'Has encrypted (hash):', !!encryptedPayloadHash);
         
         if (boardId) {
             this.boardId = boardId;
-            const boardData = this.loadBoard(boardId);
+            let boardData = null;
+            
+            // Encrypted payload flow
+            const encryptedPayload = encryptedPayloadHash || encryptedPayloadQuery;
+            const passHint = hashParams.get('hint') || null;
+            if (encryptedPayload) {
+                try {
+                    const passphrase = await this.promptForDecryptPassphrase(passHint);
+                    if (!passphrase) {
+                        this.showError('A passphrase is required to open this meeting.');
+                        this.showCreatePage();
+                        return;
+                    }
+                    const decrypted = await this.decryptBoardData(encryptedPayload, passphrase);
+                    if (decrypted) {
+                        boardData = this.validateAndSanitizeBoardData(decrypted);
+                        if (!boardData) throw new Error('Decrypted data invalid');
+                        // Cache for local use
+                        this.saveBoard(boardId, boardData);
+                        console.log('Board decrypted from URL');
+                    } else {
+                        throw new Error('Failed to decrypt');
+                    }
+                } catch (e) {
+                    console.error('Unable to open encrypted meeting:', e);
+                    const msg = (e && e.message && e.message.toLowerCase().includes('expired'))
+                        ? e.message
+                        : 'Unable to open encrypted meeting. Passphrase may be incorrect, link may be expired, or data is corrupted.';
+                    this.showError(msg);
+                    this.showCreatePage();
+                    return;
+                }
+            }
+            
+            // Fallback to local cache
+            if (!boardData) {
+                boardData = this.loadBoard(boardId);
+            }
+            
             if (boardData) {
                 console.log('Board found, showing join page');
                 this.showJoinPage(boardData);
             } else {
                 console.log('Board not found');
-                this.showError('Board not found. Please check the link.');
+                this.showError('Board not found. Please check the link. Encrypted payload is required.');
                 this.showCreatePage();
             }
         } else {
             this.showCreatePage();
         }
     }
-    
-    showCreatePage() {
-        console.log('Showing create page');
-        this.hideAllPages();
-        const createPage = document.getElementById('create-page');
-        if (createPage) {
-            createPage.classList.remove('hidden');
-        }
-        window.history.pushState({}, '', window.location.pathname);
-    }
-    
-    showJoinPage(boardData) {
-        console.log('Showing join page for board:', boardData.title);
-        this.hideAllPages();
-        const joinPage = document.getElementById('join-page');
-        if (joinPage) {
-            joinPage.classList.remove('hidden');
-        }
-        
-        const titleDisplay = document.getElementById('meeting-title-display');
-        if (titleDisplay) {
-            titleDisplay.textContent = boardData.title;
-        }
-        
-        setTimeout(() => {
-            const participantInput = document.getElementById('participant-name');
-            if (participantInput) {
-                participantInput.focus();
-            }
-        }, 100);
-    }
-    
+
     showBoardPage() {
         console.log('Showing board page');
         this.hideAllPages();
@@ -574,8 +583,8 @@ class CollabBoard {
             boardPage.classList.remove('hidden');
         }
         
-        const isAdmin = this.currentUser.name === this.currentBoard.creator;
-        console.log('User is admin:', isAdmin, 'User:', this.currentUser.name, 'Creator:', this.currentBoard.creator);
+        const isAdmin = this.currentUser && this.currentBoard && (this.currentUser.name === this.currentBoard.creator);
+        console.log('User is admin:', isAdmin, 'User:', this.currentUser?.name, 'Creator:', this.currentBoard?.creator);
         
         if (isAdmin) {
             document.body.classList.add('is-admin');
@@ -586,7 +595,7 @@ class CollabBoard {
         this.updateBoardDisplay();
         this.updateQuickStats();
     }
-    
+
     showAnalytics() {
         console.log('Showing analytics dashboard');
         this.hideAllPages();
@@ -1811,28 +1820,483 @@ class CollabBoard {
     }
     
     // Share functionality
-    showShareModal() {
+    async showShareModal() {
         // Ensure we have a board ID
         if (!this.boardId) {
             console.error('No board ID available for sharing');
             this.showError('Unable to generate share link - no board ID');
             return;
         }
+        try {
+            // Ensure passphrase available for session
+            if (!this.boardPassphrase) {
+                const passphrase = await this.promptForPassphrase();
+                if (!passphrase) {
+                    console.log('Share cancelled - no passphrase provided');
+                    return;
+                }
+                this.boardPassphrase = passphrase;
+            }
+
+            const shareUrl = await this.getEncryptedShareUrl();
+            if (!shareUrl) return;
+
+            // Display link in modal
+            const shareLinkInput = document.getElementById('share-link');
+            const shareModal = document.getElementById('share-modal');
+            const copySuccess = document.getElementById('copy-success');
+            if (shareLinkInput) shareLinkInput.value = shareUrl;
+            if (shareModal) shareModal.classList.remove('hidden');
+            if (copySuccess) copySuccess.classList.add('hidden');
+
+            // Generate QR code with the unique board URL
+            this.generateQRCode(shareUrl);
+        } catch (e) {
+            console.error('Error generating share link:', e);
+            this.showError('Failed to generate encrypted share link. Please try again.');
+        }
+    }
+
+    async getEncryptedShareUrl() {
+        // Encrypt board and return URL with fragment to avoid server/logging of payload
+        if (!this.boardId || !this.currentBoard || !this.boardPassphrase) return null;
+        const encryptedData = await this.encryptBoardData(this.currentBoard, this.boardPassphrase);
+        // Put encrypted payload in hash fragment, include optional hint
+        const base = `${window.location.origin}${window.location.pathname}?board=${this.boardId}`;
+        const hintPart = this.boardPassHint ? `&hint=${encodeURIComponent(this.boardPassHint)}` : '';
+        const url = `${base}#enc=1&data=${encryptedData}${hintPart}`;
+        if (url.length > 2000) {
+            this.showError('Board is too large to share via link. Reduce number of items or shorten descriptions.');
+            return null;
+        }
+        return url;
+    }
+    
+    promptForPassphrase() {
+        return new Promise((resolve) => {
+            const modal = document.createElement('div');
+            modal.className = 'modal';
+            modal.innerHTML = `
+                <div class="modal-backdrop"></div>
+                <div class="modal-content" style="max-width: 500px;">
+                    <div class="modal-header">
+                        <h3>🔒 Secure Your Meeting</h3>
+                    </div>
+                    <div class="modal-body">
+                        <p style="margin-bottom: 16px;">Create a strong passphrase to encrypt your board meeting data. You'll need to share this passphrase separately with participants.</p>
+                        
+                        <div style="background: #e3f2fd; padding: 12px; border-radius: 4px; margin-bottom: 16px; font-size: 13px;">
+                            <strong>💡 Security Tips:</strong>
+                            <ul style="margin: 8px 0 0 20px; padding: 0;">
+                                <li>Use at least 12 characters</li>
+                                <li>Include letters, numbers, and symbols</li>
+                                <li>Share passphrase via a different channel (phone, SMS, encrypted message)</li>
+                                <li>Never share passphrase in the same message as the link</li>
+                            </ul>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label" for="meeting-passphrase">Passphrase *</label>
+                            <input type="password" id="meeting-passphrase" class="form-control" placeholder="Enter strong passphrase" autocomplete="off">
+                            <label style="display: block; margin-top: 8px; font-size: 13px;">
+                                <input type="checkbox" id="show-passphrase" style="margin-right: 6px;">
+                                Show passphrase
+                            </label>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label" for="meeting-passphrase-confirm">Confirm Passphrase *</label>
+                            <input type="password" id="meeting-passphrase-confirm" class="form-control" placeholder="Re-enter passphrase" autocomplete="off">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label" for="meeting-expiry">Link expires in</label>
+                            <select id="meeting-expiry" class="form-control">
+                                <option value="86400000">24 hours</option>
+                                <option value="604800000" selected>7 days</option>
+                                <option value="2592000000">30 days</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="meeting-pass-hint">Passphrase hint (optional)</label>
+                            <input type="text" id="meeting-pass-hint" class="form-control" placeholder="Example: Project codename + year">
+                        </div>
+
+                        <div id="passphrase-strength" style="margin-top: 8px; font-size: 13px;"></div>
+                        
+                        <div style="display: flex; gap: 12px; margin-top: 20px;">
+                            <button id="passphrase-confirm-btn" class="btn btn--primary" style="flex: 1;">Continue</button>
+                            <button id="passphrase-cancel-btn" class="btn btn--outline" style="flex: 1;">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(modal);
+            
+            const input = modal.querySelector('#meeting-passphrase');
+            const confirmInput = modal.querySelector('#meeting-passphrase-confirm');
+            const expirySelect = modal.querySelector('#meeting-expiry');
+            const hintInput = modal.querySelector('#meeting-pass-hint');
+            const showCheckbox = modal.querySelector('#show-passphrase');
+            const strengthDiv = modal.querySelector('#passphrase-strength');
+            const confirmBtn = modal.querySelector('#passphrase-confirm-btn');
+            const cancelBtn = modal.querySelector('#passphrase-cancel-btn');
+            
+            // Show/hide passphrase
+            showCheckbox.addEventListener('change', (e) => {
+                const type = e.target.checked ? 'text' : 'password';
+                input.type = type;
+                confirmInput.type = type;
+            });
+            
+            // Passphrase strength checker
+            input.addEventListener('input', () => {
+                const passphrase = input.value;
+                const strength = this.checkPassphraseStrength(passphrase);
+                strengthDiv.innerHTML = `<span style="color: ${strength.color};">Strength: ${strength.label}</span>`;
+            });
+            
+            // Confirm button
+            confirmBtn.addEventListener('click', () => {
+                const passphrase = input.value;
+                const confirm = confirmInput.value;
+                
+                if (!passphrase) {
+                    this.showError('Please enter a passphrase');
+                    return;
+                }
+                
+                // Enforce strong passphrase policy
+                const minLen = 12;
+                const hasLower = /[a-z]/.test(passphrase);
+                const hasUpper = /[A-Z]/.test(passphrase);
+                const hasDigit = /[0-9]/.test(passphrase);
+                const hasSymbol = /[^a-zA-Z0-9]/.test(passphrase);
+                if (passphrase.length < minLen || !hasLower || !hasUpper || !hasDigit || !hasSymbol) {
+                    this.showError('Passphrase must be at least 12 characters and include upper, lower, number, and symbol.');
+                    return;
+                }
+                
+                if (passphrase !== confirm) {
+                    this.showError('Passphrases do not match');
+                    return;
+                }
+                // Save configured expiry and optional hint
+                const expiryMs = parseInt(expirySelect?.value, 10);
+                this.shareExpiryMs = Number.isFinite(expiryMs) && expiryMs > 0 ? expiryMs : this.cacheTTLms;
+                this.boardPassHint = (hintInput?.value || '').trim() || null;
+
+                document.body.removeChild(modal);
+                resolve(passphrase);
+            });
+            
+            // Cancel button
+            cancelBtn.addEventListener('click', () => {
+                document.body.removeChild(modal);
+                resolve(null);
+            });
+            
+            // Enter key on inputs
+            const handleEnter = (e) => {
+                if (e.key === 'Enter') {
+                    confirmBtn.click();
+                }
+            };
+            input.addEventListener('keydown', handleEnter);
+            confirmInput.addEventListener('keydown', handleEnter);
+            
+            // Focus input
+            setTimeout(() => input.focus(), 100);
+        });
+    }
+
+    // Prompt for decryption passphrase when opening an encrypted link
+    promptForDecryptPassphrase(hint) {
+        return new Promise((resolve) => {
+            const modal = document.createElement('div');
+            modal.className = 'modal';
+            modal.innerHTML = `
+                <div class="modal-backdrop"></div>
+                <div class="modal-content" style="max-width: 480px;">
+                    <div class="modal-header">
+                        <h3>🔐 Enter Passphrase</h3>
+                    </div>
+                    <div class="modal-body">
+                        <p style="margin-bottom: 12px;">This meeting is protected. Enter the passphrase provided by the organizer.</p>
+                        ${hint ? `<div style="margin-bottom: 12px; padding: 8px 10px; background: #f7f7f9; border-radius: 4px; font-size: 13px;">💡 <strong>Hint:</strong> ${hint.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>` : ''}
+                        <div class="form-group">
+                            <label class="form-label" for="decrypt-passphrase">Passphrase</label>
+                            <input type="password" id="decrypt-passphrase" class="form-control" placeholder="Enter passphrase" autocomplete="off">
+                            <label style="display: block; margin-top: 8px; font-size: 13px;">
+                                <input type="checkbox" id="decrypt-show-pass" style="margin-right: 6px;"> Show passphrase
+                            </label>
+                        </div>
+                        <div style="display: flex; gap: 12px; margin-top: 16px;">
+                            <button id="decrypt-confirm-btn" class="btn btn--primary" style="flex: 1;">Open</button>
+                            <button id="decrypt-cancel-btn" class="btn btn--outline" style="flex: 1;">Cancel</button>
+                        </div>
+                    </div>
+                </div>`;
+
+            document.body.appendChild(modal);
+
+            const input = modal.querySelector('#decrypt-passphrase');
+            const show = modal.querySelector('#decrypt-show-pass');
+            const ok = modal.querySelector('#decrypt-confirm-btn');
+            const cancel = modal.querySelector('#decrypt-cancel-btn');
+
+            show.addEventListener('change', (e) => {
+                input.type = e.target.checked ? 'text' : 'password';
+            });
+
+            ok.addEventListener('click', () => {
+                const pass = input.value.trim();
+                if (!pass) {
+                    this.showError('Please enter the passphrase');
+                    return;
+                }
+                document.body.removeChild(modal);
+                resolve(pass);
+            });
+
+            cancel.addEventListener('click', () => {
+                document.body.removeChild(modal);
+                resolve(null);
+            });
+
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') ok.click();
+            });
+
+            setTimeout(() => input.focus(), 50);
+        });
+    }
+    
+    checkPassphraseStrength(passphrase) {
+        if (!passphrase) return { label: 'None', color: '#999' };
         
-        const shareUrl = `${window.location.origin}${window.location.pathname}?board=${this.boardId}`;
-        const shareLinkInput = document.getElementById('share-link');
-        const shareModal = document.getElementById('share-modal');
-        const copySuccess = document.getElementById('copy-success');
+        let score = 0;
         
-        if (shareLinkInput) shareLinkInput.value = shareUrl;
-        if (shareModal) shareModal.classList.remove('hidden');
-        if (copySuccess) copySuccess.classList.add('hidden');
+        // Length
+        if (passphrase.length >= 8) score++;
+        if (passphrase.length >= 12) score++;
+        if (passphrase.length >= 16) score++;
         
-        console.log('Share modal opened with URL:', shareUrl);
-        console.log('Board ID:', this.boardId);
+        // Character variety
+        if (/[a-z]/.test(passphrase)) score++;
+        if (/[A-Z]/.test(passphrase)) score++;
+        if (/[0-9]/.test(passphrase)) score++;
+        if (/[^a-zA-Z0-9]/.test(passphrase)) score++;
         
-        // Generate QR code with the unique board URL
-        this.generateQRCode(shareUrl);
+        if (score <= 2) return { label: 'Weak', color: '#f44336' };
+        if (score <= 4) return { label: 'Fair', color: '#ff9800' };
+        if (score <= 5) return { label: 'Good', color: '#2196f3' };
+        return { label: 'Strong', color: '#4caf50' };
+    }
+    
+    
+    
+    // Encryption Methods for Corporate Security
+    async generateEncryptionKey(passphrase, salt) {
+        const encoder = new TextEncoder();
+        const passphraseKey = await crypto.subtle.importKey(
+            'raw',
+            encoder.encode(passphrase),
+            'PBKDF2',
+            false,
+            ['deriveBits', 'deriveKey']
+        );
+        
+        return crypto.subtle.deriveKey(
+            {
+                name: 'PBKDF2',
+                salt: salt,
+                iterations: 100000, // High iteration count for security
+                hash: 'SHA-256'
+            },
+            passphraseKey,
+            { name: 'AES-GCM', length: 256 },
+            false,
+            ['encrypt', 'decrypt']
+        );
+    }
+    
+    async encryptBoardData(boardData, passphrase) {
+        try {
+            // Create a lightweight version of board data
+            const lightData = {
+                title: boardData.title,
+                creator: boardData.creator,
+                created: boardData.created,
+                participants: boardData.participants,
+                agendaItems: boardData.agendaItems
+            };
+            // Embed issued and expiration timestamps (configurable)
+            const now = Date.now();
+            const ttl = this.shareExpiryMs || this.cacheTTLms || (7 * 24 * 60 * 60 * 1000);
+            lightData.issuedAt = now;
+            lightData.expiresAt = now + ttl;
+            
+            const json = JSON.stringify(lightData);
+            const encoder = new TextEncoder();
+            let data = encoder.encode(json);
+            // Compress if pako is available
+            if (window.pako && typeof window.pako.deflate === 'function') {
+                data = window.pako.deflate(data);
+            }
+            
+            // Generate random salt and IV
+            const salt = crypto.getRandomValues(new Uint8Array(16));
+            const iv = crypto.getRandomValues(new Uint8Array(12));
+            
+            // Derive encryption key from passphrase
+            const key = await this.generateEncryptionKey(passphrase, salt);
+            
+            // Encrypt the data
+            const encryptedData = await crypto.subtle.encrypt(
+                { name: 'AES-GCM', iv: iv },
+                key,
+                data
+            );
+            
+            // Combine salt + iv + encrypted data
+            const combined = new Uint8Array(salt.length + iv.length + encryptedData.byteLength);
+            combined.set(salt, 0);
+            combined.set(iv, salt.length);
+            combined.set(new Uint8Array(encryptedData), salt.length + iv.length);
+            
+            // Convert to base64 and make URL-safe
+            const base64 = btoa(String.fromCharCode(...combined));
+            return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+        } catch (e) {
+            console.error('Error encrypting board data:', e);
+            throw e;
+        }
+    }
+    
+    async decryptBoardData(encryptedData, passphrase) {
+        try {
+            // Reverse URL-safe encoding
+            const base64 = encryptedData.replace(/-/g, '+').replace(/_/g, '/');
+            const padded = base64 + '=='.slice(0, (4 - base64.length % 4) % 4);
+            
+            // Convert from base64
+            const binaryString = atob(padded);
+            const combined = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                combined[i] = binaryString.charCodeAt(i);
+            }
+            
+            // Extract salt, iv, and encrypted data
+            const salt = combined.slice(0, 16);
+            const iv = combined.slice(16, 28);
+            const encrypted = combined.slice(28);
+            
+            // Derive the same key from passphrase and salt
+            const key = await this.generateEncryptionKey(passphrase, salt);
+            
+            // Decrypt the data
+            const decrypted = await crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv: iv },
+                key,
+                encrypted
+            );
+            
+            // Decompress and convert back to JSON
+            let plainBytes = new Uint8Array(decrypted);
+            if (window.pako && typeof window.pako.inflate === 'function') {
+                try {
+                    plainBytes = window.pako.inflate(plainBytes);
+                } catch (inflateErr) {
+                    // If inflate fails, assume data wasn't compressed
+                    console.warn('Inflate failed, assuming uncompressed payload');
+                }
+            }
+            const decoder = new TextDecoder();
+            const json = decoder.decode(plainBytes);
+            const obj = JSON.parse(json);
+            // Enforce payload expiration
+            if (obj && obj.expiresAt && Date.now() > obj.expiresAt) {
+                throw new Error('This link has expired. Please request a new link from the meeting creator.');
+            }
+            return obj;
+        } catch (e) {
+            console.error('Error decrypting board data:', e);
+            // Propagate specific errors (e.g., expired) so caller can show accurate message
+            throw e;
+        }
+    }
+    
+    
+    
+    validateAndSanitizeBoardData(data) {
+        // Validate required fields
+        if (!data || typeof data !== 'object') {
+            console.error('Invalid board data: not an object');
+            return null;
+        }
+        
+        if (!data.title || typeof data.title !== 'string') {
+            console.error('Invalid board data: missing or invalid title');
+            return null;
+        }
+        
+        if (!data.creator || typeof data.creator !== 'string') {
+            console.error('Invalid board data: missing or invalid creator');
+            return null;
+        }
+        
+        // Sanitize strings to prevent XSS
+        const sanitized = {
+            title: this.sanitizeString(data.title, 200),
+            creator: this.sanitizeString(data.creator, 100),
+            created: data.created,
+            participants: Array.isArray(data.participants) 
+                ? data.participants.slice(0, 100).map(p => ({
+                    name: this.sanitizeString(p.name, 100),
+                    joinedAt: p.joinedAt
+                }))
+                : [],
+            agendaItems: Array.isArray(data.agendaItems)
+                ? data.agendaItems.slice(0, 100).map(item => ({
+                    id: item.id,
+                    title: this.sanitizeString(item.title, 300),
+                    description: this.sanitizeString(item.description || '', 2000),
+                    type: item.type,
+                    typeConfig: item.typeConfig,
+                    category: item.category,
+                    status: item.status,
+                    votes: item.votes || {},
+                    userVotes: item.userVotes || {},
+                    votingThreshold: item.votingThreshold,
+                    estimatedTime: Math.min(parseInt(item.estimatedTime) || 0, 1440),
+                    presenter: this.sanitizeString(item.presenter || '', 100),
+                    createdAt: item.createdAt,
+                    completedAt: item.completedAt
+                }))
+                : []
+        };
+        
+        console.log('Board data validated and sanitized');
+        return sanitized;
+    }
+    
+    sanitizeString(str, maxLength) {
+        if (typeof str !== 'string') return '';
+        
+        // Remove any HTML tags
+        const div = document.createElement('div');
+        div.textContent = str;
+        let sanitized = div.innerHTML;
+        
+        // Truncate to max length
+        if (sanitized.length > maxLength) {
+            sanitized = sanitized.substring(0, maxLength);
+        }
+        
+        return sanitized;
     }
     
     generateQRCode(url, retryCount = 0) {
@@ -1950,25 +2414,44 @@ class CollabBoard {
         }
     }
     
-    shareViaEmail() {
-        const shareUrl = `${window.location.origin}${window.location.pathname}?board=${this.boardId}`;
+    async shareViaEmail() {
+        // Ensure passphrase exists for encrypted sharing
+        if (!this.boardPassphrase) {
+            const pass = await this.promptForPassphrase();
+            if (!pass) return;
+            this.boardPassphrase = pass;
+        }
+        const shareUrl = await this.getEncryptedShareUrl();
+        if (!shareUrl) return;
         const subject = encodeURIComponent(`Join Board Meeting: ${this.currentBoard.title}`);
-        const body = encodeURIComponent(`You're invited to join the comprehensive board meeting "${this.currentBoard.title}".\n\nClick here to join: ${shareUrl}\n\nMeeting created by: ${this.currentBoard.creator}`);
+        const body = encodeURIComponent(`You're invited to join the comprehensive board meeting "${this.currentBoard.title}".\n\nClick here to join: ${shareUrl}\n\nThis meeting is protected. The passphrase will be shared separately.\n\nMeeting created by: ${this.currentBoard.creator}`);
         
         window.open(`mailto:?subject=${subject}&body=${body}`, '_blank');
         this.showSuccess('Email client opened with meeting invitation');
     }
     
-    shareViaTeams() {
-        const shareUrl = `${window.location.origin}${window.location.pathname}?board=${this.boardId}`;
+    async shareViaTeams() {
+        if (!this.boardPassphrase) {
+            const pass = await this.promptForPassphrase();
+            if (!pass) return;
+            this.boardPassphrase = pass;
+        }
+        const shareUrl = await this.getEncryptedShareUrl();
+        if (!shareUrl) return;
         const message = encodeURIComponent(`Join comprehensive board meeting: ${this.currentBoard.title} - ${shareUrl}`);
         
         window.open(`https://teams.microsoft.com/l/chat/0/0?users=&message=${message}`, '_blank');
         this.showSuccess('Opening Microsoft Teams to share meeting link');
     }
     
-    shareViaSlack() {
-        const shareUrl = `${window.location.origin}${window.location.pathname}?board=${this.boardId}`;
+    async shareViaSlack() {
+        if (!this.boardPassphrase) {
+            const pass = await this.promptForPassphrase();
+            if (!pass) return;
+            this.boardPassphrase = pass;
+        }
+        const shareUrl = await this.getEncryptedShareUrl();
+        if (!shareUrl) return;
         const text = encodeURIComponent(`Join our comprehensive board meeting: ${this.currentBoard.title} - ${shareUrl}`);
         
         window.open(`https://slack.com/intl/en-us/help/articles/201330736-Add-apps-to-your-Slack-workspace?text=${text}`, '_blank');
@@ -2023,19 +2506,21 @@ class CollabBoard {
     
     saveBoard(boardId, boardData) {
         try {
-            localStorage.setItem(`collab_board_${boardId}`, JSON.stringify(boardData));
+            const wrapper = { data: boardData, savedAt: new Date().toISOString() };
+            localStorage.setItem(`collab_board_${boardId}`, JSON.stringify(wrapper));
             console.log('Board saved to localStorage:', boardId);
             return true;
         } catch (e) {
             console.warn('localStorage failed, trying sessionStorage:', e);
             try {
-                sessionStorage.setItem(`collab_board_${boardId}`, JSON.stringify(boardData));
+                const wrapper = { data: boardData, savedAt: new Date().toISOString() };
+                sessionStorage.setItem(`collab_board_${boardId}`, JSON.stringify(wrapper));
                 console.log('Board saved to sessionStorage:', boardId);
                 return true;
             } catch (e2) {
                 console.warn('sessionStorage failed, using memory storage:', e2);
                 if (!window.memoryStorage) window.memoryStorage = {};
-                window.memoryStorage[`collab_board_${boardId}`] = boardData;
+                window.memoryStorage[`collab_board_${boardId}`] = { data: boardData, savedAt: new Date().toISOString() };
                 console.log('Board saved to memory storage:', boardId);
                 return true;
             }
@@ -2046,7 +2531,16 @@ class CollabBoard {
         try {
             const data = localStorage.getItem(`collab_board_${boardId}`);
             if (data) {
-                return JSON.parse(data);
+                const parsed = JSON.parse(data);
+                const entry = parsed && parsed.data ? parsed : { data: parsed, savedAt: new Date().toISOString() };
+                // TTL check
+                const saved = new Date(entry.savedAt).getTime();
+                if (!isNaN(saved) && (Date.now() - saved) > this.cacheTTLms) {
+                    console.warn('Cached board expired, removing:', boardId);
+                    localStorage.removeItem(`collab_board_${boardId}`);
+                    return null;
+                }
+                return entry.data;
             }
         } catch (e) {
             console.warn('localStorage read failed:', e);
@@ -2055,14 +2549,29 @@ class CollabBoard {
         try {
             const data = sessionStorage.getItem(`collab_board_${boardId}`);
             if (data) {
-                return JSON.parse(data);
+                const parsed = JSON.parse(data);
+                const entry = parsed && parsed.data ? parsed : { data: parsed, savedAt: new Date().toISOString() };
+                const saved = new Date(entry.savedAt).getTime();
+                if (!isNaN(saved) && (Date.now() - saved) > this.cacheTTLms) {
+                    console.warn('Session cached board expired, removing:', boardId);
+                    sessionStorage.removeItem(`collab_board_${boardId}`);
+                    return null;
+                }
+                return entry.data;
             }
         } catch (e) {
             console.warn('sessionStorage read failed:', e);
         }
         
         if (window.memoryStorage && window.memoryStorage[`collab_board_${boardId}`]) {
-            return window.memoryStorage[`collab_board_${boardId}`];
+            const entry = window.memoryStorage[`collab_board_${boardId}`];
+            const saved = new Date(entry.savedAt).getTime();
+            if (!isNaN(saved) && (Date.now() - saved) > this.cacheTTLms) {
+                console.warn('Memory cached board expired, removing:', boardId);
+                delete window.memoryStorage[`collab_board_${boardId}`];
+                return null;
+            }
+            return entry.data;
         }
         
         console.log('Board not found in any storage:', boardId);
