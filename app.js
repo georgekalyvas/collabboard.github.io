@@ -15,6 +15,7 @@ class CollabBoard {
             channel: null,
             lastUpdateTs: 0
         };
+        this._presenceListenerAttached = false;
         
         // Complete item types configuration
         this.itemTypes = {
@@ -192,6 +193,7 @@ class CollabBoard {
             this.setupColorVisionToggle();
             this.checkUrlForBoard();
             this.initAnalytics();
+            this.setupPresenceHandlers();
             
             // Auto-sync every 3 seconds
             this.updateInterval = setInterval(() => {
@@ -203,6 +205,60 @@ class CollabBoard {
             console.log('CollabBoard initialized successfully');
         } catch (error) {
             console.error('Error initializing CollabBoard:', error);
+        }
+    }
+
+    setupPresenceHandlers() {
+        if (this._presenceListenerAttached) return;
+        // Mark user offline when the tab is closed or navigated away
+        window.addEventListener('beforeunload', () => {
+            try { this.markUserOffline(); } catch (e) {}
+        });
+        // Also react to visibility changes to update lastSeen timestamps
+        document.addEventListener('visibilitychange', () => {
+            try {
+                if (document.hidden) {
+                    this.markUserLastSeen();
+                } else {
+                    this.markUserOnline();
+                }
+            } catch (e) {}
+        });
+        this._presenceListenerAttached = true;
+    }
+
+    markUserOnline() {
+        if (!this.boardId || !this.currentBoard || !this.currentUser) return;
+        const board = this.loadBoard(this.boardId) || this.currentBoard;
+        const p = (board.participants || []).find(x => x.name === this.currentUser.name);
+        if (p) {
+            p.online = true;
+            p.lastSeen = new Date().toISOString();
+            this.saveBoard(this.boardId, board);
+            this.currentBoard = board;
+        }
+    }
+
+    markUserLastSeen() {
+        if (!this.boardId || !this.currentBoard || !this.currentUser) return;
+        const board = this.loadBoard(this.boardId) || this.currentBoard;
+        const p = (board.participants || []).find(x => x.name === this.currentUser.name);
+        if (p) {
+            p.lastSeen = new Date().toISOString();
+            this.saveBoard(this.boardId, board);
+            this.currentBoard = board;
+        }
+    }
+
+    markUserOffline() {
+        if (!this.boardId || !this.currentBoard || !this.currentUser) return;
+        const board = this.loadBoard(this.boardId) || this.currentBoard;
+        const p = (board.participants || []).find(x => x.name === this.currentUser.name);
+        if (p) {
+            p.online = false;
+            p.lastSeen = new Date().toISOString();
+            try { this.saveBoard(this.boardId, board); } catch (e) {}
+            this.currentBoard = board;
         }
     }
 
@@ -868,12 +924,19 @@ class CollabBoard {
             
             console.log('User joining with role:', this.currentUser);
             
-            const existingParticipant = boardData.participants.find(p => p.name === participantName);
+            let existingParticipant = boardData.participants.find(p => p.name === participantName);
             if (!existingParticipant) {
-                boardData.participants.push(this.currentUser);
-                this.saveBoard(this.boardId, boardData);
+                existingParticipant = { ...this.currentUser, online: true };
+                boardData.participants.push(existingParticipant);
+            } else {
+                // Update presence and role (role stays admin only if original device had token)
+                existingParticipant.role = this.currentUser.role;
+                existingParticipant.online = true;
+                existingParticipant.joined = existingParticipant.joined || new Date().toISOString();
             }
-            
+            // Persist immediately so other tabs reflect the new/online participant
+            this.saveBoard(this.boardId, boardData);
+
             this.currentBoard = boardData;
             this.meetingStartTime = boardData.startTime;
             // Initialize realtime listeners now that board is known
@@ -1206,11 +1269,16 @@ class CollabBoard {
         container.innerHTML = '';
         this.currentBoard.participants.forEach(participant => {
             const isAdmin = participant.role === 'admin';
+            const isOnline = !!participant.online;
             const div = document.createElement('div');
             div.className = `participant ${isAdmin ? 'admin' : 'member'}`;
+            const statusDot = `<span class="presence-dot ${isOnline ? 'online' : 'offline'}" title="${isOnline ? 'Online' : 'Offline'}"></span>`;
+            const lastSeen = participant.lastSeen ? `<span class="last-seen">${new Date(participant.lastSeen).toLocaleTimeString()}</span>` : '';
             div.innerHTML = `
                 <div class="participant-avatar">${participant.name.charAt(0).toUpperCase()}</div>
                 <span>${participant.name}${isAdmin ? ' (Admin)' : ''}</span>
+                ${statusDot}
+                ${lastSeen}
             `;
             container.appendChild(div);
         });
@@ -2236,6 +2304,10 @@ class CollabBoard {
             if (this.realtime && this.realtime.channel) {
                 this.realtime.channel.postMessage({ type: 'board:update', boardId });
             }
+            // Force storage event listeners to fire across tabs
+            try {
+                localStorage.setItem(`collab_board_pulse_${boardId}`, String(Date.now()));
+            } catch (e) { /* ignore */ }
         } catch (e) {
             // Non-fatal
         }
