@@ -793,6 +793,19 @@ select.form-control {
   margin-bottom: var(--space-32);
 }
 
+.header svg {
+  display: block;
+  margin: 0 auto var(--space-16) auto;
+}
+
+/* Ensure logo text adapts to theme */
+.header svg text,
+.board-title svg text,
+.analytics-title svg text,
+.deck-title svg text {
+  fill: var(--color-text);
+}
+
 .header h1 {
   font-size: var(--font-size-4xl);
   color: var(--color-primary);

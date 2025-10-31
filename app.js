@@ -1594,7 +1594,7 @@ class CollabBoard {
         }
     }
     
-    // Add footer to all pages in a PDF (title/date on left, page numbers on right)
+    // Add footer to all pages in a PDF (title/date on left, page numbers on right, logo at bottom center)
     addPdfFooter(pdf, titleText) {
         const total = pdf.getNumberOfPages();
         for (let i = 1; i <= total; i++) {
@@ -1602,10 +1602,33 @@ class CollabBoard {
             const pw = pdf.internal.pageSize.getWidth();
             const ph = pdf.internal.pageSize.getHeight();
             const margin = 40;
+            
+            // Add text footer
             pdf.setFontSize(9);
             pdf.setTextColor(100);
-            pdf.text(titleText, margin, ph - 16);
-            pdf.text(`Page ${i} of ${total}`, pw - margin, ph - 16, { align: 'right' });
+            pdf.text(titleText, margin, ph - 30);
+            pdf.text(`Page ${i} of ${total}`, pw - margin, ph - 30, { align: 'right' });
+            
+            // Add CollabBoard logo at bottom center
+            const logoWidth = 80;
+            const logoHeight = 20;
+            const logoX = (pw - logoWidth) / 2;
+            const logoY = ph - 20;
+            
+            // Green square (behind)
+            pdf.setFillColor(52, 168, 83); // #34A853
+            pdf.roundedRect(logoX, logoY + 3, 8, 8, 1, 1, 'F');
+            
+            // Purple square (front)
+            pdf.setFillColor(106, 13, 173); // #6A0DAD
+            pdf.roundedRect(logoX + 4, logoY + 1, 9, 9, 1.2, 1.2, 'F');
+            
+            // "CollabBoard" text
+            pdf.setFontSize(10);
+            pdf.setTextColor(0, 0, 0);
+            pdf.setFont(undefined, 'bold');
+            pdf.text('CollabBoard', logoX + 18, logoY + 8);
+            pdf.setFont(undefined, 'normal');
         }
         // Reset text color
         pdf.setTextColor(0);
