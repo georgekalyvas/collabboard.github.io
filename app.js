@@ -579,8 +579,35 @@ class CollabBoard {
             const boardData = this.loadBoardFromUrl() || this.loadBoard(boardId);
             
             if (boardData) {
-                console.log('Board found, showing join page');
-                this.showJoinPage(boardData);
+                console.log('Board found, attempting session rehydrate');
+                this.currentBoard = boardData;
+                // Attempt to rehydrate currentUser from local storage
+                let restored = false;
+                try {
+                    const lastName = localStorage.getItem(`collab_board_lastName_${boardId}`);
+                    const adminToken = localStorage.getItem(`collab_board_adminToken_${boardId}`);
+                    if (lastName && adminToken && adminToken === boardData.adminToken && lastName === boardData.creator) {
+                        this.currentUser = { name: lastName, role: 'admin', joined: new Date().toISOString(), adminToken };
+                        restored = true;
+                    } else if (lastName) {
+                        const participant = (boardData.participants || []).find(p => p.name === lastName);
+                        if (participant) {
+                            this.currentUser = { name: participant.name, role: participant.role || 'member', joined: participant.joined || new Date().toISOString() };
+                            restored = true;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Session rehydrate failed:', e);
+                }
+
+                if (restored) {
+                    console.log('Session restored, showing board page');
+                    this.initRealtime();
+                    this.showBoardPage();
+                } else {
+                    console.log('Board found, showing join page');
+                    this.showJoinPage(boardData);
+                }
             } else {
                 console.log('Board not found');
                 this.showError('Board not found. Please check the link.');
@@ -729,6 +756,9 @@ class CollabBoard {
                 joined: new Date().toISOString(),
                 adminToken
             };
+            try {
+                localStorage.setItem(`collab_board_lastName_${this.boardId}`, creatorName);
+            } catch (e) {}
             
             const boardData = {
                 boardId: this.boardId,
@@ -830,6 +860,11 @@ class CollabBoard {
                 joined: new Date().toISOString(),
                 ...(isOriginalAdmin ? { adminToken: boardData.adminToken } : {})
             };
+
+            // Remember last joined name for this board to improve refresh experience
+            try {
+                localStorage.setItem(`collab_board_lastName_${this.boardId}`, participantName);
+            } catch (e) {}
             
             console.log('User joining with role:', this.currentUser);
             
@@ -2148,10 +2183,10 @@ class CollabBoard {
         const latestBoard = this.loadBoardFromUrl() || this.loadBoard(this.boardId);
         if (!latestBoard) return;
         
-        const currentHash = this.currentBoard ? JSON.stringify(this.currentBoard).length : 0;
-        const latestHash = JSON.stringify(latestBoard).length;
+        const currentTs = this.currentBoard && this.currentBoard.lastUpdated ? this.currentBoard.lastUpdated : 0;
+        const latestTs = latestBoard && latestBoard.lastUpdated ? latestBoard.lastUpdated : 1; // treat missing as newer
         
-        if (currentHash !== latestHash) {
+        if (latestTs > currentTs) {
             console.log('Board updated, syncing changes');
             this.currentBoard = latestBoard;
             
@@ -2163,6 +2198,8 @@ class CollabBoard {
     }
     saveBoard(boardId, boardData) {
         try {
+            // Update the lastUpdated timestamp for change detection across tabs
+            boardData.lastUpdated = Date.now();
             // Save to localStorage for persistence
             localStorage.setItem(`collab_board_${boardId}`, JSON.stringify(boardData));
             console.log('Board saved to localStorage:', boardId);
@@ -2175,6 +2212,7 @@ class CollabBoard {
         } catch (e) {
             console.warn('localStorage failed, trying sessionStorage:', e);
             try {
+                boardData.lastUpdated = Date.now();
                 sessionStorage.setItem(`collab_board_${boardId}`, JSON.stringify(boardData));
                 console.log('Board saved to sessionStorage:', boardId);
                 this.updateUrlWithBoardData(boardData);
@@ -2183,6 +2221,7 @@ class CollabBoard {
             } catch (e2) {
                 console.warn('sessionStorage failed, using memory storage:', e2);
                 if (!window.memoryStorage) window.memoryStorage = {};
+                boardData.lastUpdated = Date.now();
                 window.memoryStorage[`collab_board_${boardId}`] = boardData;
                 console.log('Board saved to memory storage:', boardId);
                 this.updateUrlWithBoardData(boardData);
