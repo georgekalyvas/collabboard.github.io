@@ -225,22 +225,59 @@ class CollabBoard {
                 this.supa.client = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
                     auth: { persistSession: true, autoRefreshToken: true }
                 });
-                // Ensure anonymous auth
+                
+                // Check for existing session
                 const { data: sessionRes } = await this.supa.client.auth.getSession();
-                if (!sessionRes || !sessionRes.session) {
-                    if (this.supa.client.auth.signInAnonymously) {
-                        await this.supa.client.auth.signInAnonymously();
-                    }
+                if (sessionRes && sessionRes.session) {
+                    const { data: userRes } = await this.supa.client.auth.getUser();
+                    this.supa.user = userRes && userRes.user ? userRes.user : null;
+                    this.supa.enabled = !!this.supa.user;
+                    if (this.supa.enabled) console.log('Supabase initialized with existing session. User:', this.supa.user.id);
+                } else {
+                    console.log('No active Supabase session. Users will need to sign in with magic link.');
+                    // Set up auth state listener for when user signs in
+                    this.supa.client.auth.onAuthStateChange((event, session) => {
+                        console.log('Auth state changed:', event);
+                        if (event === 'SIGNED_IN' && session) {
+                            this.supa.user = session.user;
+                            this.supa.enabled = true;
+                            console.log('User signed in:', this.supa.user.id);
+                            // Optionally reload board data or update UI
+                            if (this.boardId && this.currentBoard) {
+                                this.showSuccess('Successfully authenticated! You can now participate.');
+                            }
+                        } else if (event === 'SIGNED_OUT') {
+                            this.supa.user = null;
+                            this.supa.enabled = false;
+                            console.log('User signed out');
+                        }
+                    });
                 }
-                const { data: userRes } = await this.supa.client.auth.getUser();
-                this.supa.user = userRes && userRes.user ? userRes.user : null;
-                this.supa.enabled = !!this.supa.user;
-                if (this.supa.enabled) console.log('Supabase initialized. User:', this.supa.user.id);
             }
         } catch (e) {
             console.warn('Supabase init failed:', e);
             this.supa.enabled = false;
         }
+    }
+
+    async signInWithMagicLink(email) {
+        if (!this.supa.client) {
+            throw new Error('Supabase not initialized');
+        }
+        const { data, error } = await this.supa.client.auth.signInWithOtp({
+            email: email,
+            options: {
+                emailRedirectTo: window.location.origin + window.location.pathname
+            }
+        });
+        if (error) throw error;
+        return data;
+    }
+
+    async signOut() {
+        if (!this.supa.client) return;
+        const { error } = await this.supa.client.auth.signOut();
+        if (error) console.warn('Sign out error:', error);
     }
 
     // --- Supabase helpers (scaffold) ---
@@ -292,6 +329,167 @@ class CollabBoard {
                     // Update info bar (creator not known here; leave as-is)
                     this.updateParticipants();
                 } catch (e) { console.warn('Participant refresh failed:', e); }
+            })
+            .subscribe();
+        this.supa.subscriptions.push(ch);
+    }
+
+    // --- Items (Agenda) Supabase functions ---
+    async supaCreateItem(boardId, item) {
+        if (!this.supa.enabled) return null;
+        const { data, error } = await this.supa.client
+            .from('items')
+            .insert({
+                board_id: boardId,
+                type: item.type,
+                title: item.title,
+                description: item.description || '',
+                meta: {
+                    typeConfig: item.typeConfig,
+                    category: item.category,
+                    estimatedTime: item.estimatedTime,
+                    presenter: item.presenter,
+                    votingThreshold: item.votingThreshold,
+                    allowAnonymous: item.allowAnonymous,
+                    votes: item.votes,
+                    userVotes: item.userVotes || {},
+                    startedAt: item.startedAt,
+                    completedAt: item.completedAt,
+                    documents: item.documents || []
+                },
+                status: item.status || 'pending'
+            })
+            .select()
+            .single();
+        if (error) throw error;
+        return data;
+    }
+
+    async supaFetchItems(boardId) {
+        if (!this.supa.enabled) return [];
+        const { data, error } = await this.supa.client
+            .from('items')
+            .select('*')
+            .eq('board_id', boardId)
+            .order('created_at');
+        if (error) throw error;
+        return (data || []).map(item => ({
+            id: item.id,
+            type: item.type,
+            title: item.title,
+            description: item.description,
+            status: item.status,
+            created: item.created_at,
+            ...item.meta
+        }));
+    }
+
+    async supaUpdateItem(itemId, updates) {
+        if (!this.supa.enabled) return null;
+        const { data, error } = await this.supa.client
+            .from('items')
+            .update({
+                status: updates.status,
+                meta: updates.meta
+            })
+            .eq('id', itemId)
+            .select()
+            .single();
+        if (error) throw error;
+        return data;
+    }
+
+    async supaDeleteItem(itemId) {
+        if (!this.supa.enabled) return null;
+        const { error } = await this.supa.client
+            .from('items')
+            .delete()
+            .eq('id', itemId);
+        if (error) throw error;
+        return true;
+    }
+
+    supaSubscribeItems(boardId) {
+        if (!this.supa.enabled) return;
+        const ch = this.supa.client.channel(`board-items:${boardId}`)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'items', filter: `board_id=eq.${boardId}` }, async (payload) => {
+                try {
+                    // Refresh items list on any change
+                    const items = await this.supaFetchItems(boardId);
+                    this.currentBoard = this.currentBoard || { agendaItems: [] };
+                    this.currentBoard.agendaItems = items;
+                    this.updateBoardDisplay();
+                } catch (e) { console.warn('Items refresh failed:', e); }
+            })
+            .subscribe();
+        this.supa.subscriptions.push(ch);
+    }
+
+    // --- Votes Supabase functions ---
+    async supaGetMyParticipantId(boardId) {
+        if (!this.supa.enabled) return null;
+        const { data, error } = await this.supa.client
+            .from('participants')
+            .select('id')
+            .eq('board_id', boardId)
+            .eq('user_id', this.supa.user.id)
+            .single();
+        if (error) throw error;
+        return data?.id;
+    }
+
+    async supaUpsertVote(itemId, participantId, choice) {
+        if (!this.supa.enabled) return null;
+        const { data, error } = await this.supa.client
+            .from('votes')
+            .upsert({
+                item_id: itemId,
+                participant_id: participantId,
+                choice: choice
+            })
+            .select()
+            .single();
+        if (error) throw error;
+        return data;
+    }
+
+    async supaFetchVotes(itemId) {
+        if (!this.supa.enabled) return [];
+        const { data, error } = await this.supa.client
+            .from('votes')
+            .select(`
+                *,
+                participants!inner(name)
+            `)
+            .eq('item_id', itemId);
+        if (error) throw error;
+        return data || [];
+    }
+
+    supaSubscribeVotes(boardId) {
+        if (!this.supa.enabled) return;
+        const ch = this.supa.client.channel(`board-votes:${boardId}`)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'votes' }, async (payload) => {
+                try {
+                    // When votes change, refresh all items to recalculate
+                    const items = await this.supaFetchItems(boardId);
+                    this.currentBoard = this.currentBoard || { agendaItems: [] };
+                    // Fetch votes for each item
+                    for (const item of items) {
+                        const votes = await this.supaFetchVotes(item.id);
+                        item.userVotes = {};
+                        item.votes = this.getVoteStructureForType(item.type);
+                        votes.forEach(v => {
+                            item.userVotes[v.participants.name] = v.choice;
+                            if (item.votes[v.choice] !== undefined) {
+                                item.votes[v.choice]++;
+                            }
+                        });
+                        this.calculateItemStatus(item);
+                    }
+                    this.currentBoard.agendaItems = items;
+                    this.updateBoardDisplay();
+                } catch (e) { console.warn('Votes refresh failed:', e); }
             })
             .subscribe();
         this.supa.subscriptions.push(ch);
@@ -424,6 +622,38 @@ class CollabBoard {
                     console.log('Join board button clicked');
                     e.preventDefault();
                     this.joinBoard();
+                });
+            }
+            
+            // Magic link authentication
+            const sendMagicLinkBtn = document.getElementById('send-magic-link-btn');
+            if (sendMagicLinkBtn) {
+                sendMagicLinkBtn.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    const emailInput = document.getElementById('auth-email');
+                    const email = emailInput?.value.trim();
+                    if (!email) {
+                        this.showError('Please enter your email address');
+                        return;
+                    }
+                    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                        this.showError('Please enter a valid email address');
+                        return;
+                    }
+                    try {
+                        sendMagicLinkBtn.disabled = true;
+                        sendMagicLinkBtn.textContent = 'Sending...';
+                        await this.signInWithMagicLink(email);
+                        const sentMsg = document.getElementById('magic-link-sent');
+                        if (sentMsg) sentMsg.classList.remove('hidden');
+                        this.showSuccess('Magic link sent! Check your email.');
+                    } catch (error) {
+                        console.error('Magic link error:', error);
+                        this.showError('Failed to send magic link: ' + error.message);
+                    } finally {
+                        sendMagicLinkBtn.disabled = false;
+                        sendMagicLinkBtn.textContent = 'Send Magic Link';
+                    }
                 });
             }
             
@@ -786,6 +1016,27 @@ class CollabBoard {
             titleDisplay.textContent = boardData.title;
         }
         
+        // Show authentication section if Supabase is configured
+        const authSection = document.getElementById('auth-section');
+        if (authSection && window.SUPABASE_URL && window.SUPABASE_ANON_KEY) {
+            authSection.classList.remove('hidden');
+            // Check if user is already authenticated
+            if (this.supa.enabled && this.supa.user) {
+                const authStatus = document.getElementById('auth-status');
+                if (authStatus) {
+                    authStatus.innerHTML = '<p>✅ You are authenticated and ready to join!</p>';
+                    authStatus.className = 'alert alert--success';
+                }
+                const magicLinkSection = authSection.querySelector('#auth-email')?.closest('.form-group');
+                if (magicLinkSection) {
+                    document.getElementById('auth-email')?.classList.add('hidden');
+                    document.getElementById('send-magic-link-btn')?.classList.add('hidden');
+                    const label = magicLinkSection.querySelector('label');
+                    if (label) label.classList.add('hidden');
+                }
+            }
+        }
+        
         setTimeout(() => {
             const participantInput = document.getElementById('participant-name');
             if (participantInput) {
@@ -963,6 +1214,8 @@ class CollabBoard {
                         boardData.boardId = row.id;
                         boardData.participants = plist.map(p => ({ name: p.name, role: p.role, joined: p.joined_at, online: p.online, lastSeen: p.last_seen }));
                         this.supaSubscribeParticipants(this.boardId);
+                        this.supaSubscribeItems(this.boardId);
+                        this.supaSubscribeVotes(this.boardId);
                         afterLocalSave();
                     })
                     .catch(err => {
@@ -1035,6 +1288,12 @@ class CollabBoard {
             
             console.log('User joining with role:', this.currentUser);
             
+            // Check if Supabase is configured and user needs to authenticate
+            if (window.SUPABASE_URL && window.SUPABASE_ANON_KEY && (!this.supa.enabled || !this.supa.user)) {
+                this.showError('Please authenticate with your email first by sending a magic link.');
+                return;
+            }
+            
             if (this.supa && this.supa.enabled) {
                 // Register/mark online in Supabase and subscribe to changes
                 this.supaAddParticipant(this.boardId, participantName, this.currentUser.role)
@@ -1043,6 +1302,11 @@ class CollabBoard {
                         boardData.participants = plist.map(p => ({ name: p.name, role: p.role, joined: p.joined_at, online: p.online, lastSeen: p.last_seen }));
                         this.currentBoard = boardData;
                         this.supaSubscribeParticipants(this.boardId);
+                        this.supaSubscribeItems(this.boardId);
+                        this.supaSubscribeVotes(this.boardId);
+                        // Fetch existing items
+                        const items = await this.supaFetchItems(this.boardId);
+                        this.currentBoard.agendaItems = items;
                         this.meetingStartTime = boardData.startTime;
                         // Initialize realtime listeners now that board is known
                         this.initRealtime();
@@ -1145,16 +1409,33 @@ class CollabBoard {
                 documents: []
             };
             
-            this.currentBoard.agendaItems.push(newItem);
-            this.saveBoard(this.boardId, this.currentBoard);
-            
-            console.log('Agenda item added:', newItem);
-            
-            // Clear form
-            this.clearItemForm();
-            
-            this.updateBoardDisplay();
-            this.showSuccess('Agenda item added successfully!');
+            if (this.supa && this.supa.enabled) {
+                // Create item in Supabase
+                this.supaCreateItem(this.boardId, newItem)
+                    .then(async (row) => {
+                        newItem.id = row.id;
+                        this.currentBoard.agendaItems.push(newItem);
+                        console.log('Agenda item added to Supabase:', newItem);
+                        this.clearItemForm();
+                        this.updateBoardDisplay();
+                        this.showSuccess('Agenda item added successfully!');
+                    })
+                    .catch(err => {
+                        console.warn('Supabase item creation failed, falling back to local:', err);
+                        this.currentBoard.agendaItems.push(newItem);
+                        this.saveBoard(this.boardId, this.currentBoard);
+                        this.clearItemForm();
+                        this.updateBoardDisplay();
+                        this.showSuccess('Agenda item added successfully!');
+                    });
+            } else {
+                this.currentBoard.agendaItems.push(newItem);
+                this.saveBoard(this.boardId, this.currentBoard);
+                console.log('Agenda item added:', newItem);
+                this.clearItemForm();
+                this.updateBoardDisplay();
+                this.showSuccess('Agenda item added successfully!');
+            }
         } catch (error) {
             console.error('Error adding agenda item:', error);
             this.showError('Error adding agenda item: ' + error.message);
@@ -1218,6 +1499,26 @@ class CollabBoard {
             return;
         }
         
+        if (this.supa && this.supa.enabled) {
+            // Vote via Supabase
+            this.supaGetMyParticipantId(this.boardId)
+                .then(async (participantId) => {
+                    if (!participantId) throw new Error('Participant ID not found');
+                    await this.supaUpsertVote(itemId, participantId, choice);
+                    console.log('Vote recorded in Supabase');
+                    this.showSuccess(`Vote recorded: ${choice.replace('_', ' ').toUpperCase()}`);
+                    // The subscription will update the UI automatically
+                })
+                .catch(err => {
+                    console.warn('Supabase vote failed, falling back to local:', err);
+                    this._voteLocal(item, choice);
+                });
+        } else {
+            this._voteLocal(item, choice);
+        }
+    }
+
+    _voteLocal(item, choice) {
         // Remove previous vote from this user
         const previousVote = item.userVotes[this.currentUser.name];
         if (previousVote && item.votes[previousVote] !== undefined) {

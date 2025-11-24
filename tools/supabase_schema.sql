@@ -6,22 +6,26 @@ create extension if not exists pgcrypto;
 create table if not exists public.boards (
   id uuid primary key default gen_random_uuid(),
   title text not null,
-  created_by uuid not null references auth.users(id),
-  created_at timestamptz not null default now()
+  created_by uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 alter table public.boards enable row level security;
+
+-- Create index for faster board lookups
+create index if not exists idx_boards_created_by on public.boards(created_by);
 
 -- Participants
 create table if not exists public.participants (
   id bigserial primary key,
   board_id uuid not null references public.boards(id) on delete cascade,
-  user_id uuid references auth.users(id),
+  user_id uuid not null references auth.users(id) on delete cascade,
   name text not null,
   role text not null check (role in ('admin','member')),
   online boolean not null default false,
   last_seen timestamptz not null default now(),
   joined_at timestamptz not null default now(),
-  unique(board_id, name)
+  unique(board_id, user_id)
 );
 alter table public.participants enable row level security;
 
@@ -109,6 +113,14 @@ for update using (
   )
 );
 
+create policy if not exists items_delete on public.items
+for delete using (
+  exists(
+    select 1 from public.participants me
+    where me.board_id = items.board_id and me.user_id = auth.uid() and me.role = 'admin'
+  )
+);
+
 -- Votes: participants of a board can read; participants can upsert only their own vote
 create policy if not exists votes_select on public.votes
 for select using (
@@ -129,6 +141,14 @@ for insert with check (
 
 create policy if not exists votes_update on public.votes
 for update using (
+  exists(
+    select 1 from public.participants me
+    where me.id = votes.participant_id and me.user_id = auth.uid()
+  )
+);
+
+create policy if not exists votes_delete on public.votes
+for delete using (
   exists(
     select 1 from public.participants me
     where me.id = votes.participant_id and me.user_id = auth.uid()
