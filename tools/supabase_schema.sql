@@ -6,7 +6,7 @@ create extension if not exists pgcrypto;
 create table if not exists public.boards (
   id uuid primary key default gen_random_uuid(),
   title text not null,
-  created_by uuid not null,
+  created_by uuid not null references auth.users(id),
   created_at timestamptz not null default now()
 );
 alter table public.boards enable row level security;
@@ -15,7 +15,7 @@ alter table public.boards enable row level security;
 create table if not exists public.participants (
   id bigserial primary key,
   board_id uuid not null references public.boards(id) on delete cascade,
-  user_id uuid,
+  user_id uuid references auth.users(id),
   name text not null,
   role text not null check (role in ('admin','member')),
   online boolean not null default false,
@@ -53,6 +53,7 @@ alter table public.votes enable row level security;
 -- Boards: only participants can select, only creator (admin) can update/delete (simplified)
 create policy if not exists boards_select on public.boards
 for select using (
+  created_by = auth.uid() or
   exists(
     select 1 from public.participants p
     where p.board_id = boards.id and p.user_id = auth.uid()
@@ -61,6 +62,12 @@ for select using (
 
 create policy if not exists boards_insert on public.boards
 for insert with check (created_by = auth.uid());
+
+create policy if not exists boards_update on public.boards
+for update using (created_by = auth.uid());
+
+create policy if not exists boards_delete on public.boards
+for delete using (created_by = auth.uid());
 
 -- Participants: users can see rows for boards they are on; insert their own row; update their own row
 create policy if not exists participants_select on public.participants
