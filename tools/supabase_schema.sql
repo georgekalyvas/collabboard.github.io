@@ -1,158 +1,190 @@
--- Supabase schema for CollabBoard
+-- Supabase CollabBoard schema (idempotent)
+
 -- Enable pgcrypto for gen_random_uuid()
-create extension if not exists pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Boards
-create table if not exists public.boards (
-  id uuid primary key default gen_random_uuid(),
-  title text not null,
-  created_by uuid not null references auth.users(id) on delete cascade,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+CREATE TABLE IF NOT EXISTS public.boards (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL,
+  created_by uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
-alter table public.boards enable row level security;
+ALTER TABLE public.boards ENABLE ROW LEVEL SECURITY;
 
 -- Create index for faster board lookups
-create index if not exists idx_boards_created_by on public.boards(created_by);
+CREATE INDEX IF NOT EXISTS idx_boards_created_by ON public.boards(created_by);
 
 -- Participants
-create table if not exists public.participants (
-  id bigserial primary key,
-  board_id uuid not null references public.boards(id) on delete cascade,
-  user_id uuid not null references auth.users(id) on delete cascade,
-  name text not null,
-  role text not null check (role in ('admin','member')),
-  online boolean not null default false,
-  last_seen timestamptz not null default now(),
-  joined_at timestamptz not null default now(),
-  unique(board_id, user_id)
+CREATE TABLE IF NOT EXISTS public.participants (
+  id bigserial PRIMARY KEY,
+  board_id uuid NOT NULL REFERENCES public.boards(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  role text NOT NULL CHECK (role IN ('admin','member')),
+  online boolean NOT NULL DEFAULT false,
+  last_seen timestamptz NOT NULL DEFAULT now(),
+  joined_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(board_id, user_id)
 );
-alter table public.participants enable row level security;
+ALTER TABLE public.participants ENABLE ROW LEVEL SECURITY;
 
 -- Items (agenda items)
-create table if not exists public.items (
-  id bigserial primary key,
-  board_id uuid not null references public.boards(id) on delete cascade,
-  type text not null,
-  title text not null,
+CREATE TABLE IF NOT EXISTS public.items (
+  id bigserial PRIMARY KEY,
+  board_id uuid NOT NULL REFERENCES public.boards(id) ON DELETE CASCADE,
+  type text NOT NULL,
+  title text NOT NULL,
   description text,
-  meta jsonb not null default '{}'::jsonb,
-  status text not null default 'pending',
-  created_at timestamptz not null default now()
+  meta jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status text NOT NULL DEFAULT 'pending',
+  created_at timestamptz NOT NULL DEFAULT now()
 );
-alter table public.items enable row level security;
+ALTER TABLE public.items ENABLE ROW LEVEL SECURITY;
 
 -- Votes
-create table if not exists public.votes (
-  id bigserial primary key,
-  item_id bigint not null references public.items(id) on delete cascade,
-  participant_id bigint not null references public.participants(id) on delete cascade,
-  choice text not null,
-  created_at timestamptz not null default now(),
-  unique(item_id, participant_id)
+CREATE TABLE IF NOT EXISTS public.votes (
+  id bigserial PRIMARY KEY,
+  item_id bigint NOT NULL REFERENCES public.items(id) ON DELETE CASCADE,
+  participant_id bigint NOT NULL REFERENCES public.participants(id) ON DELETE CASCADE,
+  choice text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(item_id, participant_id)
 );
-alter table public.votes enable row level security;
+ALTER TABLE public.votes ENABLE ROW LEVEL SECURITY;
 
--- RLS Policies
--- Boards: only participants can select, only creator (admin) can update/delete (simplified)
-create policy if not exists boards_select on public.boards
-for select using (
-  created_by = auth.uid() or
-  exists(
-    select 1 from public.participants p
-    where p.board_id = boards.id and p.user_id = auth.uid()
-  )
-);
+-- RLS Policies (DROP IF EXISTS then CREATE)
 
-create policy if not exists boards_insert on public.boards
-for insert with check (created_by = auth.uid());
+-- Boards policies
+DROP POLICY IF EXISTS boards_select ON public.boards;
+CREATE POLICY boards_select ON public.boards
+  FOR SELECT
+  USING (
+    created_by = (SELECT auth.uid()) OR
+    EXISTS (
+      SELECT 1 FROM public.participants p
+      WHERE p.board_id = boards.id AND p.user_id = (SELECT auth.uid())
+    )
+  );
 
-create policy if not exists boards_update on public.boards
-for update using (created_by = auth.uid());
+DROP POLICY IF EXISTS boards_insert ON public.boards;
+CREATE POLICY boards_insert ON public.boards
+  FOR INSERT
+  WITH CHECK (created_by = (SELECT auth.uid()));
 
-create policy if not exists boards_delete on public.boards
-for delete using (created_by = auth.uid());
+DROP POLICY IF EXISTS boards_update ON public.boards;
+CREATE POLICY boards_update ON public.boards
+  FOR UPDATE
+  USING (created_by = (SELECT auth.uid()));
 
--- Participants: users can see rows for boards they are on; insert their own row; update their own row
-create policy if not exists participants_select on public.participants
-for select using (
-  exists(
-    select 1 from public.participants me
-    where me.board_id = participants.board_id and me.user_id = auth.uid()
-  )
-);
+DROP POLICY IF EXISTS boards_delete ON public.boards;
+CREATE POLICY boards_delete ON public.boards
+  FOR DELETE
+  USING (created_by = (SELECT auth.uid()));
 
-create policy if not exists participants_insert on public.participants
-for insert with check (user_id = auth.uid());
+-- Participants policies
+DROP POLICY IF EXISTS participants_select ON public.participants;
+CREATE POLICY participants_select ON public.participants
+  FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.participants me
+      WHERE me.board_id = participants.board_id AND me.user_id = (SELECT auth.uid())
+    )
+  );
 
-create policy if not exists participants_update on public.participants
-for update using (user_id = auth.uid());
+DROP POLICY IF EXISTS participants_insert ON public.participants;
+CREATE POLICY participants_insert ON public.participants
+  FOR INSERT
+  WITH CHECK (user_id = (SELECT auth.uid()));
 
--- Items: participants of a board can select; only admins can insert/update/delete
-create policy if not exists items_select on public.items
-for select using (
-  exists(
-    select 1 from public.participants me
-    where me.board_id = items.board_id and me.user_id = auth.uid()
-  )
-);
+DROP POLICY IF EXISTS participants_update ON public.participants;
+CREATE POLICY participants_update ON public.participants
+  FOR UPDATE
+  USING (user_id = (SELECT auth.uid()));
 
-create policy if not exists items_insert on public.items
-for insert with check (
-  exists(
-    select 1 from public.participants me
-    where me.board_id = items.board_id and me.user_id = auth.uid() and me.role = 'admin'
-  )
-);
+-- Items policies
+DROP POLICY IF EXISTS items_select ON public.items;
+CREATE POLICY items_select ON public.items
+  FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.participants me
+      WHERE me.board_id = items.board_id AND me.user_id = (SELECT auth.uid())
+    )
+  );
 
-create policy if not exists items_update on public.items
-for update using (
-  exists(
-    select 1 from public.participants me
-    where me.board_id = items.board_id and me.user_id = auth.uid() and me.role = 'admin'
-  )
-);
+DROP POLICY IF EXISTS items_insert ON public.items;
+CREATE POLICY items_insert ON public.items
+  FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.participants me
+      WHERE me.board_id = items.board_id AND me.user_id = (SELECT auth.uid()) AND me.role = 'admin'
+    )
+  );
 
-create policy if not exists items_delete on public.items
-for delete using (
-  exists(
-    select 1 from public.participants me
-    where me.board_id = items.board_id and me.user_id = auth.uid() and me.role = 'admin'
-  )
-);
+DROP POLICY IF EXISTS items_update ON public.items;
+CREATE POLICY items_update ON public.items
+  FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.participants me
+      WHERE me.board_id = items.board_id AND me.user_id = (SELECT auth.uid()) AND me.role = 'admin'
+    )
+  );
 
--- Votes: participants of a board can read; participants can upsert only their own vote
-create policy if not exists votes_select on public.votes
-for select using (
-  exists(
-    select 1 from public.participants me
-    join public.items i on i.id = votes.item_id
-    where me.board_id = i.board_id and me.user_id = auth.uid()
-  )
-);
+DROP POLICY IF EXISTS items_delete ON public.items;
+CREATE POLICY items_delete ON public.items
+  FOR DELETE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.participants me
+      WHERE me.board_id = items.board_id AND me.user_id = (SELECT auth.uid()) AND me.role = 'admin'
+    )
+  );
 
-create policy if not exists votes_insert on public.votes
-for insert with check (
-  exists(
-    select 1 from public.participants me
-    where me.id = votes.participant_id and me.user_id = auth.uid()
-  )
-);
+-- Votes policies
+DROP POLICY IF EXISTS votes_select ON public.votes;
+CREATE POLICY votes_select ON public.votes
+  FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.participants me
+      JOIN public.items i ON i.id = votes.item_id
+      WHERE me.board_id = i.board_id AND me.user_id = (SELECT auth.uid())
+    )
+  );
 
-create policy if not exists votes_update on public.votes
-for update using (
-  exists(
-    select 1 from public.participants me
-    where me.id = votes.participant_id and me.user_id = auth.uid()
-  )
-);
+DROP POLICY IF EXISTS votes_insert ON public.votes;
+CREATE POLICY votes_insert ON public.votes
+  FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.participants me
+      WHERE me.id = votes.participant_id AND me.user_id = (SELECT auth.uid())
+    )
+  );
 
-create policy if not exists votes_delete on public.votes
-for delete using (
-  exists(
-    select 1 from public.participants me
-    where me.id = votes.participant_id and me.user_id = auth.uid()
-  )
-);
+DROP POLICY IF EXISTS votes_update ON public.votes;
+CREATE POLICY votes_update ON public.votes
+  FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.participants me
+      WHERE me.id = votes.participant_id AND me.user_id = (SELECT auth.uid())
+    )
+  );
 
--- Realtime: supabase realtime requires replica identity full for tables with updates; on supabase this is handled automatically.
+DROP POLICY IF EXISTS votes_delete ON public.votes;
+CREATE POLICY votes_delete ON public.votes
+  FOR DELETE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.participants me
+      WHERE me.id = votes.participant_id AND me.user_id = (SELECT auth.uid())
+    )
+  );
+
+-- Note: Supabase Realtime requires REPLICA IDENTITY FULL for tables that broadcast updates; Supabase handles this automatically.
